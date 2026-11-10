@@ -31,6 +31,6 @@ A Linux isolated test run passed 60 tests on 2026-11-10; it used no production c
 
 `LAB-INSTALL.md` is an unverified laboratory draft and cannot be used as a production installation recipe. The optional `native_ui` directory is experimental and excluded from the supported installation path.
 
-Known limitation: group edits currently submit the whole allowed-group selection without a version precondition. Simultaneous administrators can overwrite changes made after one opened the dialog; use a single administrator at a time until optimistic concurrency and conflict handling are implemented and tested. The UI text about service rules and 2FA registration is also pending clarification: the candidate intentionally reports these as unknown.
+Group edits include the previously observed managed-group state and reject stale changes with HTTP 409. This relies on every writer using the same file lock. The candidate reports MFA registration and service policies as unknown. The onboarding service currently accepts only IPv4 proxy and bind addresses; public IPv6 at Traefik is a separate matter.
 
 Run only a single onboarding process; overlapping processes with different allowed-group settings do not share one policy. Recovery fails closed on a pending invitation with a now-disallowed group and requires manual review.
