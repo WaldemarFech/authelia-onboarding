@@ -1,36 +1,93 @@
-# Authelia Onboarding — development candidate
+# Authelia-Benutzerverwaltung mit Traefik
 
-**DEVELOPMENT SOURCE ONLY — NOT READY TO INSTALL OR EXPOSE.** This isolated educational candidate derives from a Jarvis source package (`scripts/authelia_onboarding`, source revision `636a90ed986a16012a5633344ef36d27eea4fd26`). It consists of a separate account/onboarding service, a version-pinned Authelia file-writer patch and an experimental native settings modification. It is not a complete fork of Authelia.
+Mit diesem Projekt sollst du auf deinem eigenen Server eine Anmeldung mit Authelia und eine Benutzerverwaltung hinter Traefik einrichten können. Du brauchst dafür keine fertigen Linux-Kenntnisse: Kopiere die Vorlage unten in deine KI und lass dich Schritt für Schritt begleiten.
 
-The candidate contains **unreviewed security changes**. The portability unit tests check only a narrow configuration subset and do not prove live authorization or deployment safety. The historical tests were adapted to explicit fixtures and disabled archive endpoints; the native UI builder's old component hash still does not match the changed component. The configuration patcher still needs integration tests. Do not expose or install this on any real system.
+> **Stand: Entwicklungsversion.** Der Quellcode der Benutzerverwaltung und die Installationsanleitung sind noch nicht für einen öffentlichen Produktivbetrieb freigegeben. Die KI soll zuerst Traefik und das offizielle Authelia einrichten und prüfen. Die zusätzliche Benutzerverwaltung darf sie erst nach erfolgreicher Sicherheitsprüfung und einem eigenen isolierten Funktionstest aktivieren. Details: [Entwicklungsstand](ENTWICKLUNG.md).
 
-## Configuration under development
+## So sieht die Benutzerverwaltung aus
 
-The service requires explicit `ONBOARDING_ADMINS` (comma-separated exact lower-case account IDs), `ONBOARDING_TRUSTED_PROXY` (a single exact IP), `ONBOARDING_ORIGIN` (HTTPS origin), `ONBOARDING_BIND_IP` (a non-wildcard IP) and `ONBOARDING_BIND_PORT`. Group writes default to disabled. `ONBOARDING_ALLOWED_GROUPS` can be set to a comma-separated list, and these groups are exposed as editable in the administrative UI. Group behavior has synthetic tests, not real-stack acceptance. `AUTHELIA_USERS_DB` and `ONBOARDING_DB` configure local state paths. Never put credentials in these values.
+![Benutzerverwaltung mit zwei Beispielkonten](docs/images/benutzerverwaltung-desktop.png)
 
-The ACL patcher requires the same origin and administrators and refuses mismatched preexisting onboarding ACLs. The checked-in Traefik YAML is only an example with reserved example domains and example IPs. It is not safe to activate without a security review: access to the service must be restricted at the network layer to the designated proxy, identity headers must be stripped, and the Authelia two-factor rule and deny rule must precede portal bypass. Check the actual Authelia/Traefik version and validate with positive and spoofed-header negative tests. An authenticated header alone is not proof of a second factor.
+![Gruppenverwaltung auf einem Smartphone](docs/images/gruppen-mobil.png)
 
-## Open release gates
+*Aufnahmen einer isolierten Vorschau mit erfundenen Testkonten. Sie zeigen eine Entwicklungsfassung; sie sind kein Nachweis einer fertigen Installation.*
 
-- Configure and validate all services in an isolated Debian 13 environment; test anonymous, forged-header, unauthorized-admin, wrong-2FA and direct-backend paths.
-- Verify file-writer locking and concurrent user/password changes against the actual chosen Authelia image; keep the exact upstream patch provenance.
-- Review the remaining legacy Jellyfin-specific policy helper and remove it if unused. The legacy notification HTTP endpoints are disabled and are not a bootstrap viewer.
-- Rebuild and review the version-pinned native UI, or omit it. Its shortcut is deliberately disabled in this candidate.
-- Re-scan the final exact snapshot and history for secrets and private information; manually review findings and license/provenance.
-- Review Linux service permissions, backup, recovery and deployment instructions.
+## Schnellstart: Prompt für deine KI
 
-The file-writer patch targets Authelia v4.39.16. The upstream project is Apache-2.0; retain its license and notices when distributing derived material. The separate original component's licensing has not been resolved here.
+Kopiere den gesamten Kasten in ChatGPT, Claude, Codex oder eine andere KI mit Zugriff auf deinen Server beziehungsweise der Möglichkeit, dich durch die Befehle zu begleiten:
 
-Run the limited local checks from this directory using `python -m pytest tests/test_portability.py -q`. The startup-validation tests extract the function AST so they can run without Linux-specific modules; this does not execute the service or replace Linux tests.
+```text
+Du bist mein geduldiger Linux-, Proxmox- und Netzwerk-Administrator. Hilf mir,
+auf meinem eigenen VPS mit Proxmox VE und Debian 13 Traefik, Authelia,
+eine geschützte Testseite und später die Benutzerverwaltung aus diesem
+Repository einzurichten:
+https://github.com/WaldemarFech/authelia-onboarding
 
-The legacy notification archive HTTP endpoints are disabled; account summaries no longer read the fixed Authelia configuration and MFA database paths and report MFA/policy as unknown. The native UI builder is not release-ready. A service environment file at `/etc/authelia-onboarding/config.env` is required by the candidate systemd unit.
+Erkläre mir die Schritte einfach. Prüfe das System selbst, wenn du Zugriff
+hast; sonst gib mir ausführbare Schritte und sage, welche Ausgaben du brauchst.
+Erfinde keine Zugänge, IP-Adressen oder Ergebnisse.
 
-Earlier access-control rules must have plain, provably different literal domains; wildcard, regex, same-host and unrecognized selectors are rejected to avoid bypassing the protected pair through first-match ordering. This is conservative and can reject safe configurations.
+Frage mich zuerst gesammelt:
+- Welche Domain und welche Subdomains für Anmeldung und Testseite nutze ich?
+- Wie heißt mein erster Administrator, und welche E-Mail-Adresse wird für
+  sein Konto benötigt? Ein funktionierender Mailserver ist zunächst nicht nötig.
+- Habe ich Zugriff auf DNS, Proxmox und die Konsole meines VPS-Anbieters?
+- Welche Dienste laufen bereits und dürfen nicht unterbrochen werden?
+- Möchte ich eine Authenticator-App oder einen Sicherheitsschlüssel nutzen?
 
-A Linux isolated test run passed 60 tests on 2026-11-10; it used no production configuration, network access, running service or real Authelia/Traefik process. This is not deployment or end-to-end acceptance. The upstream Authelia v4.39.16 Apache-2.0 text is retained under `licenses/`; the license and notices for all included material still need release review.
+Untersuche vor Änderungen: öffentliche IPv4/IPv6, Provider-Vorgaben, vorhandene
+Netze, Bridges, Routen, Firewall und NAT, belegte Ports, Container-IDs, freien
+Speicher und bestehende Dienste. Diese Werte stammen aus einer Beispielanlage,
+sind aber ausdrücklich nur Vorschläge und müssen bei mir geprüft werden:
 
-`LAB-INSTALL.md` is an unverified laboratory draft and cannot be used as a production installation recipe. The optional `native_ui` directory is experimental and excluded from the supported installation path.
+- internes Netz 192.168.100.0/24, Gateway 192.168.100.1;
+- Traefik: LXC 1003, 192.168.100.3;
+- Authelia: LXC 1004, 192.168.100.4;
+- kleine Testseiten: LXC 100032, 192.168.100.32.
 
-Known limitation: group edits currently submit the whole allowed-group selection without a version precondition. Simultaneous administrators can overwrite changes made after one opened the dialog; use a single administrator at a time until optimistic concurrency and conflict handling are implemented and tested. The UI text about service rules and 2FA registration is also pending clarification: the candidate intentionally reports these as unknown.
+Wenn etwas bereits belegt ist oder zum Provider nicht passt, verwende freie,
+passende Alternativen. Erstelle einen Netzplan und erkläre, ob eine zusätzliche
+vmbr-Bridge, IPv4-Forwarding, ausgehendes NAT und DNAT für TCP 80/443 nötig
+sind. Prüfe vorhandene Regeln und verhindere Konflikte. Sichere die bisherige
+Konfiguration und stelle einen Konsolen-Zugang und Rückfallweg sicher, bevor
+du das Netz oder die Firewall änderst. IPv6 nur veröffentlichen, wenn der
+Pfad vollständig eingerichtet und gefiltert ist.
 
-Run only a single onboarding process; overlapping processes with different allowed-group settings do not share one policy. Recovery fails closed on a pending invitation with a now-disallowed group and requires manual review.
+Arbeite in überprüfbaren Etappen:
+1. Erstelle geeignete Debian-13-LXCs und richte DNS und Netzwerk ein.
+2. Installiere eine aktuell unterstützte Traefik-Version und eine einfache
+   statische Testseite. Stelle sie zunächst ohne Authelia mit gültigem HTTPS
+   bereit und teste DNS, Zertifikat und Erreichbarkeit.
+3. Installiere offizielles Authelia und erstelle mein erstes Konto. Verwende
+   die Dokumentation passend zu den tatsächlich installierten Versionen.
+4. Ohne Mailserver: Prüfe, ob der offizielle Filesystem-Notifier für die
+   erste Registrierung geeignet ist. Erkläre mir, wie ich die einmalige
+   Nachricht selbst über eine geschützte Konsole einsehe und die 2FA-App
+   registriere. Lies oder kopiere keine Codes, Links, QR-Codes, Passwörter,
+   TOTP-Schlüssel oder Tokens in den Chat, in Toolausgaben oder Logs.
+   Die Notifier-Datei ist sensibel und der Dateimodus nur eine Testlösung.
+5. Schütze die Testseite mit Traefik ForwardAuth und Authelia. Prüfe, dass
+   anonyme Nutzer, falsche Passwörter, fehlender zweiter Faktor, gefälschte
+   Identitätsheader und direkte Backendzugriffe keinen Zugang erhalten;
+   prüfe auch die erfolgreiche Anmeldung mit Passwort und zweitem Faktor.
+6. Lies dann die README und ENTWICKLUNG.md dieses Repositories. Die eigene
+   Benutzerverwaltung ist derzeit ein experimenteller Quellstand und nicht
+   installationsfertig. Prüfe ihre Versionsbindung und offenen Sicherheits-
+   und Integrationstests. Baue und teste sie nur in einem isolierten Labor
+   mit Testkonten; aktiviere sie nicht öffentlich, solange die dokumentierten
+   Freigabebedingungen nicht erfüllt und von dir nachgewiesen sind.
+
+Lege Geheimnisse direkt auf dem System geschützt an; schreibe sie nie ins
+Repository oder in den Chat. Dokumentiere die gewählten IPs, DNS-Namen,
+Container, Konfigurationsorte, Backups und die Ergebnisse der echten Tests.
+Erkläre mir abschließend, wie ich eine weitere Seite und weitere Benutzer
+hinzufüge, und unterscheide fertige Schritte von offenen Punkten.
+```
+
+## Was ist hier enthalten?
+
+- Eine separate Benutzerverwaltung für Einladungen, Konten und Gruppen.
+- Ein an Authelia 4.39.16 gebundener Patch für die koordinierte Bearbeitung der Benutzerdatei.
+- Eine experimentelle Erweiterung der Authelia-Oberfläche und eine **noch nicht freigegebene** [Laboranleitung](LAB-INSTALL.md).
+
+Die Benutzerverwaltung ist kein eigenständiger vollständiger Authelia-Fork. Authelia selbst und Traefik werden separat installiert. [Entwicklungsstand und Einschränkungen](ENTWICKLUNG.md) erläutern Tests, Sicherheitsannahmen und noch offene Arbeiten. Eine allgemeine Proxmox-Musterlösung ist geplant und folgt später.
