@@ -1,0 +1,29 @@
+{
+  "status": "experimental-not-approved",
+  "upstream": {
+    "tag": "v4.39.28",
+    "commit": "8da42b2348b0351c6284a2940a9c5eec3d4cd3fd",
+    "source": "https://github.com/authelia/authelia/releases/tag/v4.39.28",
+    "base_file_sha256": {
+      "internal/authentication/file_user_provider.go": "da21e69a1f5fa9803087c43554881640786c01a6ab510b4a2a06098d4c038a29",
+      "internal/authentication/file_user_provider_database.go": "f61ae9b082565800b29c0e5c5c54db2d22c2b1799f3a049eab5e975c2e6ab50b",
+      "internal/authentication/file_user_provider_test.go": "e236667c64e64a483ae4f402016635f6de8317d6d485d1f7109bb0e7fc895b1e"
+    }
+  },
+  "historical_base": "v4.39.16 / Jarvis file-user-lock patch",
+  "port_patch_sha256": "4ff3800ee4e5c8ab6537adca3547a296446d9f82c1cf1a872ce29d39759f8cac",
+  "watcher_test_sha256": "2e9dfdaac582bf2daead81aa687f38f41b7aa73aa0337b24137c1c553a728be2",
+  "frontend_release_archive_sha256": "2009c5f499f92179c0b4c8a3185a8bc4f3e1666d169818d382242103c09a380f",
+  "go_version": "go1.27.1 linux/amd64",
+  "go_archive_sha256": "63d339f0da5ab53635a56f2490a7984dfe12dfcff22ad749f63edaf590168445",
+  "test_binary_sha256": "cfa8590615f69d3927ab9a19d51ed29f17a92caf2d2cb79c7c79bb133891ec75",
+  "binary_runtime": "linux/amd64 CGO=1, ELF interpreter /lib64/ld-linux-x86-64.so.2, max GLIBC symbol 2.34",
+  "test_binary_local_path": "../authelia-4.39.28-port-linux-amd64",
+  "limitations": [
+    "Not an OCI image or production release",
+    "No injected post-rename directory-fsync and reload failure",
+    "Atomic replacement does not explicitly preserve ACLs, SELinux labels or other extended attributes",
+    "Linux-specific syscall; same effective UID and trusted writable directory required",
+    "Runtime libc compatibility is target-dependent"
+  ]
+}
