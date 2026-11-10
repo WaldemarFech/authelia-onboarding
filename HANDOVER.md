@@ -4,7 +4,7 @@ Stand: 10. November 2026. Das Repository ist ein **experimenteller Entwicklungss
 
 ## Vorhanden
 
-- Öffentliche README mit kopierbarem KI-Prompt, Funktionsgalerie und historischem Vergleich der Authelia-4.39.16-Kontoseite. Die Screenshots zeigen synthetische Daten.
+- Öffentliche README mit kopierbarem KI-Prompt, Funktionsgalerie und historischem Vergleich der Authelia-4.39.16-Kontoseite. Die Funktionsgalerie zeigt synthetische Daten; die geschwärzte Aufnahme der Kontoeinstellungen stammt aus einer echten Anmeldung.
 - Separate Benutzerverwaltung für Einladungen, Konten und Gruppen. Die Version 4.39.16 des Patches ist historisch; ein experimenteller Port auf 4.39.28 und ein noch nicht gebautes OCI-Rezept liegen im Repository.
 - Im isolierten Labor bestanden HTTPS, TOTP, Einladungserstellung/-einlösung und der Konfliktfall bei Gruppenänderungen; der Hash-Aufruf verwendete einen Testshim, keinen echten Docker-Socket. Die Ergebnisse beweisen keine Produktionsfreigabe.
 
@@ -19,4 +19,4 @@ Stand: 10. November 2026. Das Repository ist ein **experimenteller Entwicklungss
 
 ## Verknüpfung
 
-Die Proxmox-Musterlösung ist ein separates Projekt: https://github.com/WaldemarFech/meine-proxmox-musterloesung . Ihr Anfangsstand enthält eine KI-Kopiervorlage und eine eigene Aufgabenliste, aber noch keine Screenshots und keinen vollständigen Installationsnachweis.
+Die Proxmox-Musterlösung ist ein separates Projekt: https://github.com/WaldemarFech/meine-proxmox-musterloesung . Das Repository enthält eine KI-Kopiervorlage, eine Architektur-/Netzdokumentation mit realen Beispielwerten und geschwärzte echte Aufnahmen; ein vollständiger Installationsnachweis und Proxmox-GUI-Screenshots stehen noch aus.
