@@ -8,11 +8,22 @@ Mit diesem Projekt sollst du auf deinem eigenen Server eine Anmeldung mit Authel
 
 ## So sieht die Benutzerverwaltung aus
 
-![Benutzerverwaltung mit zwei Beispielkonten](docs/images/benutzerverwaltung-desktop.png)
+![Benutzerverwaltung mit Beispielkonten](docs/images/konten-desktop.png)
 
 ![Gruppenverwaltung auf einem Smartphone](docs/images/gruppen-mobil.png)
 
 *Aufnahmen einer isolierten Vorschau mit erfundenen Testkonten. Sie zeigen eine Entwicklungsfassung; sie sind kein Nachweis einer fertigen Installation.*
+
+## Funktionen der Benutzerverwaltung
+
+Die separate Oberfläche bündelt Funktionen rund um Authelia-Konten:
+
+- **Einladungen:** Administratoren erstellen zeitlich und in der Anzahl der Einlösungen begrenzte Einladungen, sehen deren Status und können sie widerrufen. Berechtigte Gruppen lassen sich vorgeben.
+- **Konto anlegen:** Eingeladene wählen selbst ihren Benutzernamen und ihr Passwort über einen Einladungslink. Der Link ist ein Zugangsschlüssel und gehört nicht in öffentliche Chats oder Screenshots.
+- **Konten und Gruppen:** Administratoren suchen Konten, bearbeiten ausdrücklich freigegebene Gruppen und deaktivieren Konten. Bei einem inzwischen geänderten Gruppenstand wird ein veraltetes Speichern abgewiesen.
+- **Sicherheit:** Die Verwaltungsroute soll über Traefik und Authelia erst nach Anmeldung mit zwei Faktoren erreichbar sein. Die Konfiguration und ihre tatsächlichen Netzwerkgrenzen müssen im eigenen System geprüft werden.
+
+Die Bilder zeigen ausschließlich synthetische Vorschauen einer Entwicklungsfassung. Der aktuelle Stand ist noch nicht zur Installation auf einem öffentlich erreichbaren System freigegeben.
 
 ## Schnellstart: Prompt für deine KI
 
@@ -36,6 +47,7 @@ Frage mich zuerst gesammelt:
 - Habe ich Zugriff auf DNS, Proxmox und die Konsole meines VPS-Anbieters?
 - Welche Dienste laufen bereits und dürfen nicht unterbrochen werden?
 - Möchte ich eine Authenticator-App oder einen Sicherheitsschlüssel nutzen?
+- Möchte ich später Jellyfin mit Authelia als Anmelde-Backend verbinden?
 
 Untersuche vor Änderungen: öffentliche IPv4/IPv6, Provider-Vorgaben, vorhandene
 Netze, Bridges, Routen, Firewall und NAT, belegte Ports, Container-IDs, freien
@@ -79,12 +91,73 @@ Arbeite in überprüfbaren Etappen:
    mit Testkonten; aktiviere sie nicht öffentlich, solange die dokumentierten
    Freigabebedingungen nicht erfüllt und von dir nachgewiesen sind.
 
+Wenn ich Jellyfin nutzen möchte, erkläre das separate Authelia-Plugin und
+die ausdrückliche Gruppenregel. Unterscheide 2FA im Browser von nativen
+Jellyfin-Clients und prüfe, wie bestehende Sitzungen nach Entzug enden.
+
 Lege Geheimnisse direkt auf dem System geschützt an; schreibe sie nie ins
 Repository oder in den Chat. Dokumentiere die gewählten IPs, DNS-Namen,
 Container, Konfigurationsorte, Backups und die Ergebnisse der echten Tests.
 Erkläre mir abschließend, wie ich eine weitere Seite und weitere Benutzer
 hinzufüge, und unterscheide fertige Schritte von offenen Punkten.
 ```
+
+## Funktionsgalerie
+
+Die Aufnahmen zeigen die tatsächliche Oberfläche mit **simulierten API-Antworten und erfundenen Konten**. Es wurden keine gültigen Einladungslinks, Passwörter oder Tokens aufgenommen. Die Bilder sind eine Vorschau und kein Nachweis einer fertig installierten Anlage.
+
+### Konten verwalten
+
+Konten suchen, ihren Status sehen und Aktionen aufrufen.
+
+![Kontenübersicht am Desktop](docs/images/konten-desktop.png)
+
+### Gruppen zuweisen
+
+Nur ausdrücklich freigegebene Gruppen bearbeiten; andere Gruppen bleiben erhalten.
+
+![Gruppen für ein Beispielkonto bearbeiten](docs/images/gruppen-desktop.png)
+
+### Einladung erstellen
+
+Gültigkeitsdauer, Anzahl neuer Konten und freigegebene Gruppen auswählen.
+
+![Dialog zum Erstellen einer Einladung](docs/images/einladung-erstellen-desktop.png)
+
+### Einladungen im Blick behalten
+
+Offene, verbrauchte und widerrufene Einladungen unterscheiden; offene Einladungen können widerrufen werden.
+
+![Liste mit drei Einladungszuständen](docs/images/einladungsstatus-desktop.png)
+
+### Einladung annehmen
+
+Die eingeladene Person erstellt ihr Konto selbst; im Beispiel bleiben die Passwortfelder leer.
+
+![Konto mit fiktivem Namen über Einladung erstellen](docs/images/einladung-annehmen-desktop.png)
+
+<details>
+<summary>Dieselben Ansichten auf dem Smartphone</summary>
+
+![Kontenübersicht auf dem Smartphone](docs/images/konten-mobil.png)
+
+![Gruppen bearbeiten auf dem Smartphone](docs/images/gruppen-mobil.png)
+
+![Einladung erstellen auf dem Smartphone](docs/images/einladung-erstellen-mobil.png)
+
+![Einladungsstatus auf dem Smartphone](docs/images/einladungsstatus-mobil.png)
+
+![Einladung annehmen auf dem Smartphone](docs/images/einladung-annehmen-mobil.png)
+
+</details>
+
+Ein direkter Vorher-/Nachher-Vergleich der nativen Authelia-Kontoseite ist derzeit nicht enthalten: Unsere frühere Anpassung ist versionsgebunden und für die aktuelle Version noch nicht überprüft. Die hier gezeigte Benutzerverwaltung ergänzt Authelia als separate Oberfläche.
+
+## Beispiel: Jellyfin mit Authelia verbinden
+
+Über ein separates [Jellyfin-Authelia-Plugin](https://github.com/nikarh/jellyfin-plugin-authelia) kann Jellyfin Authelia als Anmelde- und Autorisierungs-Backend verwenden. Eine Gruppe wie `jellyfin-users` kann in einer **ausdrücklichen Authelia-Zugriffsregel** festlegen, wer sich bei Jellyfin neu anmelden darf. Der Gruppenname allein schaltet keine Funktion frei; Plugin, Authelia-Regel und die in dieser Verwaltung erlaubten Gruppen müssen zusammenpassen. Ein [Fork des Plugins](https://github.com/WaldemarFech/jellyfin-plugin-authelia) ist ebenfalls öffentlich; seine Aktualität und Kompatibilität müssen vor Einsatz geprüft werden.
+
+Wichtig: Das Plugin beschreibt für native Jellyfin-Clients Benutzername und Passwort **ohne 2FA**. Eine getrennte Browser-Route kann über Traefik und Authelia anders geschützt werden. Bereits ausgestellte Jellyfin-Sitzungen oder Tokens können nach einem Gruppenentzug oder einer Kontosperre weiter gültig sein; sie müssen gegebenenfalls in Jellyfin separat beendet werden. Prüfe beide Wege und die tatsächlichen Regeln in deinem eigenen System.
 
 ## Was ist hier enthalten?
 
