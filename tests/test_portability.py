@@ -100,7 +100,8 @@ class StartupTests(unittest.TestCase):
         for key, value in [("ONBOARDING_BIND_IP", "0.0.0.0"), ("ONBOARDING_ORIGIN", "http://example.invalid"),
                            ("ONBOARDING_ADMINS", "Alice"), ("ONBOARDING_TRUSTED_PROXY", "0.0.0.0/0"),
                            ("ONBOARDING_TRUSTED_PROXY", "0.0.0.0"), ("ONBOARDING_TRUSTED_PROXY", "224.0.0.1"),
-                           ("ONBOARDING_BIND_IP", "224.0.0.1")]:
+                           ("ONBOARDING_BIND_IP", "224.0.0.1"), ("ONBOARDING_BIND_IP", "::1"),
+                           ("ONBOARDING_TRUSTED_PROXY", "::1")]:
             with self.subTest(key=key), patch.dict(os.environ, {**self.valid, key:value}, clear=True):
                 with self.assertRaises(RuntimeError):
                     self.run_config()

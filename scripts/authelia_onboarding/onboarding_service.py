@@ -928,6 +928,9 @@ def configure_from_environment() -> tuple[str, int]:
         port = int(values["ONBOARDING_BIND_PORT"])
     except ValueError as exc:
         raise RuntimeError("invalid proxy or bind address") from exc
+    # ThreadingHTTPServer uses AF_INET: do not accept an unusable IPv6 setup.
+    if proxy_ip.version != 4 or bind_ip.version != 4:
+        raise RuntimeError("only IPv4 proxy and bind addresses are supported")
     if (proxy_ip.is_unspecified or proxy_ip.is_multicast or bind_ip.is_unspecified
             or bind_ip.is_multicast or not (1 <= port <= 65535)):
         raise RuntimeError("unspecified or multicast addresses and invalid ports are forbidden")
