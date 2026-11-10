@@ -2,9 +2,9 @@
 
 Mit diesem Projekt sollst du auf deinem eigenen Server eine Anmeldung mit Authelia und eine Benutzerverwaltung hinter Traefik einrichten können. Du brauchst dafür keine fertigen Linux-Kenntnisse: Kopiere die Vorlage unten in deine KI und lass dich Schritt für Schritt begleiten.
 
-> **Stand: Entwicklungsversion.** Der Quellcode der Benutzerverwaltung und die Installationsanleitung sind noch nicht für einen öffentlichen Produktivbetrieb freigegeben. Die KI soll zuerst Traefik und das offizielle Authelia einrichten und prüfen. Die zusätzliche Benutzerverwaltung darf sie erst nach erfolgreicher Sicherheitsprüfung und einem eigenen isolierten Funktionstest aktivieren. Details: [Entwicklungsstand](ENTWICKLUNG.md).
+**Aus der Praxis:** Die ursprüngliche Benutzerverwaltung läuft auf unserem VPS. Die laufende Anlage nutzt einen angepassten Authelia-Build auf Basis **4.39.16**; ihr Quellstand stimmt für die fünf geprüften Dienstdateien mit den ursprünglichen Jarvis-Quellen überein. Ein separater Jarvis-Benutzer hat sich am 10. November 2026 erneut mit Passwort und TOTP angemeldet; die Kontoeinstellungen waren erreichbar. Frühere Live-Tests umfassten auch die Verwaltungsoberfläche und Gruppenänderungen.
 
-> **Versionshinweis:** Der hier enthaltene historische Patch betrifft Authelia 4.39.16. Neuere Authelia-Versionen enthalten Sicherheitskorrekturen; siehe die [Upstream-Hinweise zu 4.39.20](https://github.com/authelia/authelia/releases/tag/v4.39.20). Installiere 4.39.16 nicht allein aufgrund dieses Repositories. Eine [experimentelle Portierung auf 4.39.28](scripts/authelia_onboarding/patches/v4.39.28/README.md) wurde isoliert getestet; sie ist nicht für den Einsatz freigegeben: Ein isolierter Fehlertest hat bei aufeinanderfolgenden Dateifehlern eine Abweichung zwischen Speicher und Datei nachgewiesen; die Korrektur läuft.
+**Für deine eigene Installation:** Dieses Repository enthält eine für andere Netze und Benutzer angepasste Entwicklungsfassung. Die fünf geprüften Dienstdateien unterscheiden sich vom laufenden VPS-Stand; dessen Live-Nachweise gelten daher nicht automatisch für diese Fassung. Der experimentelle [Patch für 4.39.28](scripts/authelia_onboarding/patches/v4.39.28/README.md) wurde im Labor mit Traefik, TOTP und Einladungen geprüft, aber **nicht auf unseren VPS ausgerollt**. Der veröffentlichte frühe Port hat einen belegten Fehlerfall; die Sicherheitsgrenzen und der ergänzende Guard-Kandidat stehen in der verlinkten Anleitung. Nutze aktuelle Upstream-Versionen und prüfe die konkrete Integration für deine Anlage.
 
 ## So sieht die Benutzerverwaltung aus
 
@@ -13,6 +13,12 @@ Mit diesem Projekt sollst du auf deinem eigenen Server eine Anmeldung mit Authel
 ![Gruppenverwaltung auf einem Smartphone](docs/images/gruppen-mobil.png)
 
 *Aufnahmen einer isolierten Vorschau mit erfundenen Testkonten. Sie zeigen eine Entwicklungsfassung; sie sind kein Nachweis einer fertigen Installation.*
+
+### Echte Aufnahme aus der laufenden Anlage
+
+![Echte Authelia-Kontoeinstellungen; persönliche Felder geschwärzt](docs/images/authelia-einstellungen-live.png)
+
+*Aufnahme vom 10. November 2026 nach erfolgreicher Anmeldung. Name, Benutzername und E-Mail wurden vor dem Screenshot abgedeckt. Der spätere Aufruf der separaten Verwaltungsseite lieferte in diesem Test HTTP 403. Zusätzlich meldete die Kontoseite zwar Authentifizierungsstufe 2, aber keine registrierten 2FA-Methoden. Beide Ursachen sind offen. Die darüber gezeigten Verwaltungsbilder verwenden Testdaten.*
 
 ## Funktionen der Benutzerverwaltung
 
