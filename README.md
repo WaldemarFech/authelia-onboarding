@@ -89,7 +89,7 @@ hinzufüge, und unterscheide fertige Schritte von offenen Punkten.
 ## Was ist hier enthalten?
 
 - Eine separate Benutzerverwaltung für Einladungen, Konten und Gruppen.
-- Ein an Authelia 4.39.16 gebundener Patch für die koordinierte Bearbeitung der Benutzerdatei.
+- Ein historischer Patch für Authelia 4.39.16 und eine [experimentelle Portierung für 4.39.28](scripts/authelia_onboarding/patches/v4.39.28/README.md) zur koordinierten Bearbeitung der Benutzerdatei.
 - Eine experimentelle Erweiterung der Authelia-Oberfläche und eine **noch nicht freigegebene** [Laboranleitung](LAB-INSTALL.md).
 
 Die Benutzerverwaltung ist kein eigenständiger vollständiger Authelia-Fork. Authelia selbst und Traefik werden separat installiert. [Entwicklungsstand und Einschränkungen](ENTWICKLUNG.md) erläutern Tests, Sicherheitsannahmen und noch offene Arbeiten. Eine allgemeine Proxmox-Musterlösung ist geplant und folgt später.
