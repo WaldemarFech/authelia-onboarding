@@ -151,7 +151,28 @@ Die eingeladene Person erstellt ihr Konto selbst; im Beispiel bleiben die Passwo
 
 </details>
 
-Ein direkter Vorher-/Nachher-Vergleich der nativen Authelia-Kontoseite ist derzeit nicht enthalten: Unsere frühere Anpassung ist versionsgebunden und für die aktuelle Version noch nicht überprüft. Die hier gezeigte Benutzerverwaltung ergänzt Authelia als separate Oberfläche.
+## Historischer Vergleich: native Kontoseite
+
+So sah die native Settings-Startseite von Authelia **4.39.16** im Original und mit unserer damaligen Jarvis-Erweiterung aus. Beide Ansichten verwenden die echten jeweiligen Frontend-Dateien und dieselben simulierten Kontodaten. Der Vergleich ist **historisch**: Die Erweiterung ist für 4.39.28 noch nicht nachgewiesen und kein Bestandteil einer freigegebenen Installation. Die Aufnahmen belegen weder den Zustand einer laufenden Anlage noch eine echte Anmeldung.
+
+| Original Authelia 4.39.16 | Jarvis-Erweiterung für 4.39.16 |
+| --- | --- |
+| ![Originale Authelia-Settings-Startseite am Desktop](docs/images/native-original-desktop.png) | ![Erweiterte Jarvis-Kontoseite am Desktop](docs/images/native-jarvis-desktop.png) |
+
+<details>
+<summary>Historischer Vergleich auf dem Smartphone</summary>
+
+**Original Authelia 4.39.16**
+
+![Originale Settings-Startseite auf dem Smartphone](docs/images/native-original-mobil.png)
+
+**Jarvis-Erweiterung für 4.39.16**
+
+![Erweiterte Kontoseite auf dem Smartphone](docs/images/native-jarvis-mobil.png)
+
+</details>
+
+Das Original verweist auf dieser Startseite über das Menü auf weitere vorhandene Optionen. Die Vergleichsbilder zeigen weder, dass dem Original sämtliche Kontofunktionen fehlen, noch beweisen sie die Funktion der Schaltflächen. Die oben gezeigte Benutzerverwaltung mit Einladungen ist ein separater Zusatzdienst und hat keine entsprechende originale Verwaltungsseite in diesem Vergleich.
 
 ## Beispiel: Jellyfin mit Authelia verbinden
 
