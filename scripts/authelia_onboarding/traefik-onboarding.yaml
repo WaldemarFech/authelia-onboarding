@@ -1,0 +1,59 @@
+http:
+  routers:
+    authelia-onboarding-public:
+      rule: >-
+        Host(`auth.example.invalid`) &&
+        (Path(`/onboarding/accept`) ||
+         Path(`/onboarding/accept.js`) ||
+         Path(`/onboarding/site.css`) ||
+         Path(`/onboarding/api/invite/check`) ||
+         Path(`/onboarding/api/invite/redeem`))
+      entryPoints:
+        - websecure
+      tls: {}
+      priority: 1000
+      middlewares:
+        - onboarding-client-scrub
+        - onboarding-public-rate
+      service: authelia-onboarding
+    authelia-onboarding-admin:
+      rule: >-
+        Host(`auth.example.invalid`) &&
+        (Path(`/onboarding/admin`) ||
+         Path(`/onboarding/admin.js`) ||
+         PathPrefix(`/onboarding/admin/`))
+      entryPoints:
+        - websecure
+      tls: {}
+      priority: 1001
+      middlewares:
+        - onboarding-client-scrub
+        - onboarding-forward-auth
+      service: authelia-onboarding
+  middlewares:
+    onboarding-client-scrub:
+      headers:
+        customRequestHeaders:
+          Remote-User: ""
+          Remote-Groups: ""
+          Remote-Email: ""
+          Remote-Name: ""
+          X-Auth-Request-User: ""
+          X-Forwarded-User: ""
+          Authorization: ""
+    onboarding-forward-auth:
+      forwardAuth:
+        address: http://10.77.0.11:9091/api/authz/forward-auth-noauth
+        trustForwardHeader: false
+        authResponseHeaders:
+          - Remote-User
+    onboarding-public-rate:
+      rateLimit:
+        average: 20
+        period: 1m
+        burst: 30
+  services:
+    authelia-onboarding:
+      loadBalancer:
+        servers:
+          - url: http://10.77.0.11:9945

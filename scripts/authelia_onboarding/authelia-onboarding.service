@@ -1,0 +1,33 @@
+[Unit]
+Description=Restricted Authelia account onboarding and administration
+After=network.target docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+User=root
+Group=root
+EnvironmentFile=/etc/authelia-onboarding/config.env
+WorkingDirectory=/opt/authelia-onboarding
+ExecStart=/usr/bin/python3 -I -B /opt/authelia-onboarding/onboarding_service.py
+Restart=on-failure
+RestartSec=3s
+TimeoutStopSec=10s
+UMask=0077
+StateDirectory=authelia-onboarding
+StateDirectoryMode=0700
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/opt/authelia/config
+NoNewPrivileges=yes
+RestrictSUIDSGID=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+MemoryDenyWriteExecute=yes
+LimitNOFILE=1024
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=authelia-onboarding
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,31 @@
+{
+  "upstream_tag": "v4.39.16",
+  "upstream_sources": {
+    "internal/authentication/file_user_provider.go": {
+      "url": "https://raw.githubusercontent.com/authelia/authelia/v4.39.16/internal/authentication/file_user_provider.go",
+      "base_sha256": "295c912320f729b19c525410a4d509918b7042a761bea7dd1e1acca79b4cb784"
+    },
+    "internal/authentication/file_user_provider_database.go": {
+      "url": "https://raw.githubusercontent.com/authelia/authelia/v4.39.16/internal/authentication/file_user_provider_database.go",
+      "base_sha256": "1bb068e3a7eaa5c88d8f6cb3424bc2b1b14a284bc428f2d347949aa79b3a6f3c"
+    },
+    "internal/authentication/file_user_provider_test.go": {
+      "url": "https://raw.githubusercontent.com/authelia/authelia/v4.39.16/internal/authentication/file_user_provider_test.go",
+      "base_sha256": "62f69d38a31e3cf7269309f3c30c6bd867f71932859969d11fc8be119120b792"
+    }
+  },
+  "patch_sha256": "6da55ca93598e479efb829c58ffbe1fd730e68ab4c0d36bf36eb7070f5074c46",
+  "platform_scope": "Linux CT1004 Docker image; syscall.Flock and syscall.Stat_t require adapters for other targets",
+  "post_rename_durability": "A directory fsync error after rename leaves durability uncertain. The native method returns an error and reloads the visible file while both locks are held; inspect the file before retrying.",
+  "remaining_risk": "Reload failure after Save failure cannot guarantee that the in-memory database matches disk. The patch reports both errors. Target directory must be trusted and writable, with a regular owner-only user database and lock file.",
+  "evidence_scope": "Historical local build checkpoint before the subsequent Linux CGO build, candidate image smoke and live rollouts; current deployment and later acceptance are documented in the adjacent README.md and ../README.md",
+  "status": "patched package compiled as Linux/amd64 test binary with CGO disabled; all focused tests and full affected package passed locally on darwin/arm64 with CGO disabled; no image built or deployed; no remote host changed",
+  "focused_upstream_tests": [
+    "Both native reset and change preserve an onboarding-style atomic edit and disabled user; successful Save replaces the inode, retains 0600, leaves parseable YAML and no temporary file.",
+    "Native UpdatePassword starts and holds the provider mutex, then remains pending on the shared flock while an onboarding-style file replacement is made.",
+    "A deterministic unsafe-mode Save rejection preserves disk bytes and reloads the old password into provider memory.",
+    "Rapid external group and disable edits after a native password save each reload immediately; no watcher cooldown can drop the only disable event."
+  ],
+  "live_precondition_evidence": "Existing sanitized vps-auth-state-20260930.json records user database root-owned 0600 and config directory root-owned 0755; no new live probe.",
+  "test_limit": "Local tests ran on darwin/arm64 with CGO disabled; the Linux/amd64 test binary was compiled but not executed. No deployable CGO-enabled image was built. No deterministic injection of a failure after temporary-file creation or after rename is included."
+}
