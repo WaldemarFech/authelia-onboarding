@@ -19,7 +19,7 @@ The ACL patcher requires the same origin and administrators and refuses mismatch
 - Re-scan the final exact snapshot and history for secrets and private information; manually review findings and license/provenance.
 - Review Linux service permissions, backup, recovery and deployment instructions.
 
-The file-writer patch targets Authelia v4.39.16. The upstream project is Apache-2.0; retain its license and notices when distributing derived material. The separate original component's licensing has not been resolved here.
+The historical file-writer patch targets Authelia v4.39.16; an [experimental v4.39.28 port](scripts/authelia_onboarding/patches/v4.39.28/README.md) is available. The upstream project is Apache-2.0; retain its license and notices when distributing derived material. The separate original component's licensing has not been resolved here.
 
 Run the limited local checks from this directory using `python -m pytest tests/test_portability.py -q`. The startup-validation tests extract the function AST so they can run without Linux-specific modules; this does not execute the service or replace Linux tests.
 
@@ -27,7 +27,7 @@ The legacy notification archive HTTP endpoints are disabled; account summaries n
 
 Earlier access-control rules must have plain, provably different literal domains; wildcard, regex, same-host and unrecognized selectors are rejected to avoid bypassing the protected pair through first-match ordering. This is conservative and can reject safe configurations.
 
-A Linux isolated test run passed 60 tests on 2026-11-10; it used no production configuration, network access, running service or real Authelia/Traefik process. This is not deployment or end-to-end acceptance. The upstream Authelia v4.39.16 Apache-2.0 text is retained under `licenses/`; the license and notices for all included material still need release review.
+The isolated Linux unit suite passed on 2026-11-10 without production configuration. A separate isolated HTTPS lab used Traefik, the experimental v4.39.28 Authelia binary and onboarding to exercise password, TOTP, invitation and account login; a test shim replaced the Docker CLI hash call. Actual Docker/image integration, production network boundaries and deployment acceptance remain unverified. The upstream Authelia v4.39.16 Apache-2.0 text is retained under `licenses/`; the license and notices for all included material still need release review.
 
 `LAB-INSTALL.md` is an unverified laboratory draft and cannot be used as a production installation recipe. The optional `native_ui` directory is experimental and excluded from the supported installation path.
 

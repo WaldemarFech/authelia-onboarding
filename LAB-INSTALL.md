@@ -6,7 +6,7 @@
 
 Authelia übernimmt Anmeldung und 2FA. Ein separater Python-Dienst bietet Einladungen, Kontosperre und erlaubte Gruppen. Traefik nimmt HTTPS entgegen, entfernt vom Client gelieferte Identitätsheader und ruft für die Administrationsrouten Authelia ForwardAuth auf. Der Python-Dienst akzeptiert Identität ausschließlich vom exakt konfigurierten Proxy und prüft den Administrator zusätzlich. Alle drei Grenzen sind erforderlich.
 
-Dieser Code stammt aus einer Installation mit Authelia **4.39.16** und einem separat gebauten Patch für die gemeinsame Sperre der Benutzerdatei. Upstream ohne diesen passenden Patch ist bei gleichzeitigen Änderungen über die Authelia-Passwortfunktion und die Verwaltung nicht nachweislich sicher. Der Patch ist versionsgebunden; nicht blind auf andere Versionen anwenden. Ein reproduzierbarer allgemeiner Image-Build und ein vollständiger End-to-End-Test fehlen noch. Die native Settings-UI im Ordner `native_ui/` ist experimentell, passt wegen geändertem Hash nicht zum Builder und ist nicht Teil der Installationsanleitung. Die Verwaltung wird später direkt unter `/onboarding/admin` aufgerufen.
+Dieser Code stammt aus einer Installation mit Authelia **4.39.16** und einem separat gebauten Patch für die gemeinsame Sperre der Benutzerdatei. Upstream ohne diesen passenden Patch ist bei gleichzeitigen Änderungen über die Authelia-Passwortfunktion und die Verwaltung nicht nachweislich sicher. Der historische Patch ist versionsgebunden; nicht blind auf andere Versionen anwenden. Eine [experimentelle Portierung auf 4.39.28](scripts/authelia_onboarding/patches/v4.39.28/README.md) wurde isoliert geprüft. Im Labor bestanden HTTPS, Passwort und TOTP, geschützte Adminroute sowie Einladungserstellung und -einlösung; der Hash-Aufruf nutzte dabei einen Testshim statt eines echten Docker-Sockets. Ein vollständiger Image- und Docker-End-to-End-Test fehlt. Die native Settings-UI im Ordner `native_ui/` ist experimentell, nicht vollständig geprüft und kein Teil dieser Installationsanleitung. Die Verwaltung wird später direkt unter `/onboarding/admin` aufgerufen.
 
 ## Vorbedingungen
 
@@ -31,7 +31,7 @@ AUTHELIA_USERS_DB=/opt/authelia/config/users_database.yml
 ONBOARDING_DB=/var/lib/authelia-onboarding/state.sqlite3
 ```
 
-Die Administratoren müssen exakt den Authelia-Benutzernamen entsprechen; der Dienst verlangt Kleinbuchstaben. Die Proxy-IP muss die am Dienst tatsächlich ankommende Quell-IP sein. Niemals `0.0.0.0` als Bind-Adresse verwenden. Der Origin muss die tatsächlich benutzte HTTPS-Origin sein; ohne abschließenden Slash oder Pfad. Die Gruppenliste ist eine explizite Rechtefreigabe: nur geprüfte, durch diesen Dienst verwaltbare Gruppen eintragen oder leer lassen. Bestehende nicht freigegebene Gruppen bleiben bei Änderungen erhalten.
+Die Administratoren müssen exakt den Authelia-Benutzernamen entsprechen; der Dienst verlangt Kleinbuchstaben. Die Proxy-IP muss die am Dienst tatsächlich ankommende Quell-IP sein. Proxy- und Bind-Adresse dieses Dienstes müssen derzeit IPv4-Adressen sein; öffentliches IPv6 an Traefik ist davon getrennt. Niemals `0.0.0.0` als Bind-Adresse verwenden. Der Origin muss die tatsächlich benutzte HTTPS-Origin sein; ohne abschließenden Slash oder Pfad. Die Gruppenliste ist eine explizite Rechtefreigabe: nur geprüfte, durch diesen Dienst verwaltbare Gruppen eintragen oder leer lassen. Bestehende nicht freigegebene Gruppen bleiben bei Änderungen erhalten.
 
 ## Geplanter Laborablauf
 
