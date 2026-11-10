@@ -26,6 +26,7 @@ import signal
 import sqlite3
 import stat
 import subprocess
+from subprocess import TimeoutExpired
 import tempfile
 import termios
 import threading
@@ -666,10 +667,13 @@ def hash_password(password: str) -> str:
                     sent = True
             if proc.poll() is not None and not ready:
                 break
-        if proc is not None and proc.poll() is None:
-            proc.kill()
-            raise RuntimeError("password hash operation timed out")
-        if proc is None or proc.wait(timeout=2) != 0 or not sent or bytes(password_bytes) in output:
+        # A child can close its terminal before it exits. EOF alone does not
+        # mean timeout: give it the remainder of the original deadline.
+        try:
+            returncode = proc.wait(timeout=max(0.0, deadline - time.monotonic()))
+        except TimeoutExpired as exc:
+            raise RuntimeError("password hash operation timed out") from exc
+        if returncode != 0 or not sent or bytes(password_bytes) in output:
             raise RuntimeError("password hashing failed safely")
         match = ARGON_RE.search(output)
         if not match:
