@@ -1,0 +1,1076 @@
+diff --git a/internal/authentication/file_user_provider.go b/internal/authentication/file_user_provider.go
+index ee4c004..797e8d8 100644
+--- a/internal/authentication/file_user_provider.go
++++ b/internal/authentication/file_user_provider.go
+@@ -11,6 +11,7 @@ import (
+ 	"os"
+ 	"strings"
+ 	"sync"
++	"syscall"
+ 	"time"
+ 
+ 	"github.com/go-crypt/crypt/algorithm"
+@@ -27,19 +28,19 @@ import (
+ 
+ // FileUserProvider is a provider reading details from a file.
+ type FileUserProvider struct {
+-	config        *schema.AuthenticationBackendFile
+-	hash          algorithm.Hash
+-	database      FileUserProviderDatabase
+-	mutex         sync.Mutex
+-	timeoutReload time.Time
++	config     *schema.AuthenticationBackendFile
++	hash       algorithm.Hash
++	database   FileUserProviderDatabase
++	authzMutex sync.RWMutex // acquired before mutex when a request and a write overlap
++	mutex      sync.RWMutex
++	invalid    bool // guarded by mutex; restart required after storage failure
+ }
+ 
+ // NewFileUserProvider creates a new instance of FileUserProvider.
+ func NewFileUserProvider(config *schema.AuthenticationBackendFile) (provider *FileUserProvider) {
+ 	return &FileUserProvider{
+-		config:        config,
+-		timeoutReload: time.Now().Add(-1 * time.Second),
+-		database:      NewFileUserDatabase(config.Path, config.Search.Email, config.Search.CaseInsensitive, getExtra(config)),
++		config:   config,
++		database: NewFileUserDatabase(config.Path, config.Search.Email, config.Search.CaseInsensitive, getExtra(config)),
+ 	}
+ }
+ 
+@@ -55,29 +56,93 @@ func getExtra(config *schema.AuthenticationBackendFile) (extra map[string]expres
+ 	return extra
+ }
+ 
+-// Reload the database.
+-func (p *FileUserProvider) Reload() (reloaded bool, err error) {
+-	now := time.Now()
++// lockFileUserDatabase takes the same stable sidecar lock as the onboarding writer.
++// Closing the returned file releases the Linux flock.
++func lockFileUserDatabase(path string) (*os.File, error) {
++	lock, err := os.OpenFile(path+".lock", os.O_RDWR|os.O_CREATE|syscall.O_CLOEXEC|syscall.O_NOFOLLOW, 0600)
++	if err != nil {
++		return nil, fmt.Errorf("failed to open user database lock: %w", err)
++	}
++
++	info, err := lock.Stat()
++	if err != nil {
++		lock.Close()
++		return nil, fmt.Errorf("failed to stat user database lock: %w", err)
++	}
++
++	stat, ok := info.Sys().(*syscall.Stat_t)
++	if !ok || !info.Mode().IsRegular() || info.Mode().Perm()&0077 != 0 || stat.Uid != uint32(os.Geteuid()) || stat.Nlink != 1 {
++		lock.Close()
++		return nil, fmt.Errorf("unsafe user database lock metadata")
++	}
++
++	deadline := time.Now().Add(10 * time.Second)
++	for {
++		err = syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
++		if err == nil {
++			return lock, nil
++		}
++		if err == syscall.EINTR {
++			continue
++		}
++		if err != syscall.EWOULDBLOCK && err != syscall.EAGAIN {
++			lock.Close()
++			return nil, fmt.Errorf("failed to lock user database: %w", err)
++		}
++		if !time.Now().Before(deadline) {
++			lock.Close()
++			return nil, fmt.Errorf("timed out locking user database")
++		}
++		time.Sleep(50 * time.Millisecond)
++	}
++}
++
++// recoverPasswordSave reloads the visible file while the provider and file locks are held.
++// A failed post-rename directory sync still leaves persistence uncertain.
++func (p *FileUserProvider) recoverPasswordSave(saveErr error) error {
++	p.invalid = true
++	if reloadErr := p.database.Load(); reloadErr != nil {
++		return errors.Join(saveErr, fmt.Errorf("failed to reload after save error: %w", reloadErr))
++	}
+ 
++	return saveErr
++}
++
++// BeginAuthorization keeps the provider stable throughout an authz request.
++// A failed storage operation prevents new authorization until restart.
++func (p *FileUserProvider) BeginAuthorization() (release func(), err error) {
++	p.authzMutex.RLock()
++	p.mutex.RLock()
++	invalid := p.invalid
++	p.mutex.RUnlock()
++	if invalid {
++		p.authzMutex.RUnlock()
++		return nil, ErrOperationFailed
++	}
++	return p.authzMutex.RUnlock, nil
++}
++
++// Reload the database on every watcher event. A cooldown can discard the only
++// event after a security-critical external change such as disabling a user.
++func (p *FileUserProvider) Reload() (reloaded bool, err error) {
++	p.authzMutex.Lock()
++	defer p.authzMutex.Unlock()
+ 	p.mutex.Lock()
+ 
+ 	defer p.mutex.Unlock()
+-
+-	if now.Before(p.timeoutReload) {
+-		return false, &errReload{err: ErrWatcherCooldown}
++	if p.invalid {
++		return false, &errReload{err: ErrOperationFailed, critical: true}
+ 	}
+ 
+ 	switch err = p.database.Load(); {
+-	case err == nil:
+-		p.setTimeoutReload(now)
+ 	case errors.Is(err, ErrWatcherNoContent):
+-		return false, &errReload{err: err}
+-	default:
++		p.invalid = true
++		return false, &errReload{err: err, critical: true}
++	case err != nil:
++		p.invalid = true
+ 		return false, &errReload{err: fmt.Errorf("failed to reload: %w", err), critical: true}
+ 	}
+ 
+-	p.setTimeoutReload(now)
+-
+ 	return true, nil
+ }
+ 
+@@ -88,6 +153,11 @@ func (p *FileUserProvider) Close() (err error) {
+ 
+ // CheckUserPassword checks if provided password matches for the given user.
+ func (p *FileUserProvider) CheckUserPassword(username string, password string) (match bool, err error) {
++	p.mutex.RLock()
++	defer p.mutex.RUnlock()
++	if p.invalid {
++		return false, ErrOperationFailed
++	}
+ 	var details FileUserDatabaseUserDetails
+ 
+ 	if details, err = p.database.GetUserDetails(username); err != nil {
+@@ -103,6 +173,11 @@ func (p *FileUserProvider) CheckUserPassword(username string, password string) (
+ 
+ // GetDetails retrieve the groups a user belongs to.
+ func (p *FileUserProvider) GetDetails(username string) (details *UserDetails, err error) {
++	p.mutex.RLock()
++	defer p.mutex.RUnlock()
++	if p.invalid {
++		return nil, ErrOperationFailed
++	}
+ 	var d FileUserDatabaseUserDetails
+ 
+ 	if d, err = p.database.GetUserDetails(username); err != nil {
+@@ -118,6 +193,11 @@ func (p *FileUserProvider) GetDetails(username string) (details *UserDetails, er
+ 
+ // GetDetailsExtended implements the UserProvider interface.
+ func (p *FileUserProvider) GetDetailsExtended(username string) (details *UserDetailsExtended, err error) {
++	p.mutex.RLock()
++	defer p.mutex.RUnlock()
++	if p.invalid {
++		return nil, ErrOperationFailed
++	}
+ 	var d FileUserDatabaseUserDetails
+ 
+ 	if d, err = p.database.GetUserDetails(username); err != nil {
+@@ -133,6 +213,25 @@ func (p *FileUserProvider) GetDetailsExtended(username string) (details *UserDet
+ 
+ // UpdatePassword update the password of the given user.
+ func (p *FileUserProvider) UpdatePassword(username string, newPassword string) (err error) {
++	p.authzMutex.Lock()
++	defer p.authzMutex.Unlock()
++	p.mutex.Lock()
++	defer p.mutex.Unlock()
++	if p.invalid {
++		return ErrOperationFailed
++	}
++
++	lock, err := lockFileUserDatabase(p.config.Path)
++	if err != nil {
++		return err
++	}
++	defer lock.Close()
++
++	if err = p.database.Load(); err != nil {
++		p.invalid = true
++		return err
++	}
++
+ 	var details FileUserDatabaseUserDetails
+ 
+ 	if details, err = p.database.GetUserDetails(username); err != nil {
+@@ -153,14 +252,8 @@ func (p *FileUserProvider) UpdatePassword(username string, newPassword string) (
+ 
+ 	p.database.SetUserDetails(details.Username, &details)
+ 
+-	p.mutex.Lock()
+-
+-	p.setTimeoutReload(time.Now())
+-
+-	p.mutex.Unlock()
+-
+ 	if err = p.database.Save(); err != nil {
+-		return err
++		return p.recoverPasswordSave(err)
+ 	}
+ 
+ 	return nil
+@@ -168,6 +261,25 @@ func (p *FileUserProvider) UpdatePassword(username string, newPassword string) (
+ 
+ // ChangePassword implements the UserProvider interface.
+ func (p *FileUserProvider) ChangePassword(username string, oldPassword string, newPassword string) (err error) {
++	p.authzMutex.Lock()
++	defer p.authzMutex.Unlock()
++	p.mutex.Lock()
++	defer p.mutex.Unlock()
++	if p.invalid {
++		return ErrOperationFailed
++	}
++
++	lock, err := lockFileUserDatabase(p.config.Path)
++	if err != nil {
++		return fmt.Errorf("%w : %v", ErrOperationFailed, err)
++	}
++	defer lock.Close()
++
++	if err = p.database.Load(); err != nil {
++		p.invalid = true
++		return fmt.Errorf("%w : %v", ErrOperationFailed, err)
++	}
++
+ 	var details FileUserDatabaseUserDetails
+ 
+ 	if details, err = p.database.GetUserDetails(username); err != nil {
+@@ -186,7 +298,7 @@ func (p *FileUserProvider) ChangePassword(username string, oldPassword string, n
+ 		return ErrPasswordWeak
+ 	}
+ 
+-	oldPasswordCorrect, err := p.CheckUserPassword(username, oldPassword)
++	oldPasswordCorrect, err := details.Password.MatchAdvanced(oldPassword)
+ 	if err != nil {
+ 		return ErrAuthenticationFailed
+ 	}
+@@ -205,14 +317,8 @@ func (p *FileUserProvider) ChangePassword(username string, oldPassword string, n
+ 
+ 	p.database.SetUserDetails(details.Username, &details)
+ 
+-	p.mutex.Lock()
+-
+-	p.setTimeoutReload(time.Now())
+-
+-	p.mutex.Unlock()
+-
+ 	if err = p.database.Save(); err != nil {
+-		return fmt.Errorf("%w : %v", ErrOperationFailed, err)
++		return fmt.Errorf("%w : %v", ErrOperationFailed, p.recoverPasswordSave(err))
+ 	}
+ 
+ 	return nil
+@@ -241,10 +347,6 @@ func (p *FileUserProvider) StartupCheck() (err error) {
+ 	return nil
+ }
+ 
+-func (p *FileUserProvider) setTimeoutReload(now time.Time) {
+-	p.timeoutReload = now.Add(time.Second / 2)
+-}
+-
+ // NewFileCryptoHashFromConfig returns a crypt.Hash given a valid configuration.
+ func NewFileCryptoHashFromConfig(config schema.AuthenticationBackendFilePassword) (hash algorithm.Hash, err error) {
+ 	switch config.Algorithm {
+diff --git a/internal/authentication/file_user_provider_database.go b/internal/authentication/file_user_provider_database.go
+index 2cceba7..e339076 100644
+--- a/internal/authentication/file_user_provider_database.go
++++ b/internal/authentication/file_user_provider_database.go
+@@ -8,8 +8,10 @@ import (
+ 	"fmt"
+ 	"net/url"
+ 	"os"
++	"path/filepath"
+ 	"strings"
+ 	"sync"
++	"syscall"
+ 
+ 	"github.com/asaskevich/govalidator/v12"
+ 	"github.com/go-crypt/crypt"
+@@ -411,17 +413,65 @@ func (m *FileDatabaseModel) Read(filePath string) (err error) {
+ 	return nil
+ }
+ 
+-// Write a FileDatabaseModel to disk.
++// Write a FileDatabaseModel to disk using an atomic replacement.
+ func (m *FileDatabaseModel) Write(fileName string) (err error) {
+-	var (
+-		data []byte
+-	)
+-
+-	if data, err = yaml.Marshal(m); err != nil {
++	data, err := yaml.Marshal(m)
++	if err != nil {
+ 		return err
+ 	}
+ 
+-	return os.WriteFile(fileName, data, fileAuthenticationMode)
++	original, err := os.Lstat(fileName)
++	if err != nil {
++		return fmt.Errorf("failed to stat authentication database: %w", err)
++	}
++
++	stat, ok := original.Sys().(*syscall.Stat_t)
++	if !ok || !original.Mode().IsRegular() || original.Mode().Perm()&0077 != 0 || stat.Uid != uint32(os.Geteuid()) || stat.Nlink != 1 {
++		return fmt.Errorf("unsafe authentication database metadata")
++	}
++
++	dir := filepath.Dir(fileName)
++	temp, err := os.CreateTemp(dir, "."+filepath.Base(fileName)+".authelia-*")
++	if err != nil {
++		return fmt.Errorf("failed to create authentication database temporary file: %w", err)
++	}
++	defer os.Remove(temp.Name())
++	defer temp.Close()
++
++	if err = temp.Chmod(fileAuthenticationMode); err != nil {
++		return fmt.Errorf("failed to set authentication database permissions: %w", err)
++	}
++	if _, err = temp.Write(data); err != nil {
++		return fmt.Errorf("failed to write authentication database: %w", err)
++	}
++	if err = temp.Sync(); err != nil {
++		return fmt.Errorf("failed to sync authentication database: %w", err)
++	}
++	if err = temp.Close(); err != nil {
++		return fmt.Errorf("failed to close authentication database: %w", err)
++	}
++
++	current, err := os.Lstat(fileName)
++	if err != nil {
++		return fmt.Errorf("failed to recheck authentication database: %w", err)
++	}
++	if !os.SameFile(original, current) {
++		return fmt.Errorf("authentication database changed during save")
++	}
++	if err = os.Rename(temp.Name(), fileName); err != nil {
++		return fmt.Errorf("failed to replace authentication database: %w", err)
++	}
++
++	directory, err := os.Open(dir)
++	if err != nil {
++		return fmt.Errorf("authentication database replaced but directory could not be opened for sync: %w", err)
++	}
++	defer directory.Close()
++	if err = directory.Sync(); err != nil {
++		return fmt.Errorf("authentication database replaced but directory sync failed: %w", err)
++	}
++
++	return nil
+ }
+ 
+ // FileDatabaseUserDetailsModel is the model of user details in the file database.
+diff --git a/internal/authentication/file_user_provider_failclosed_test.go b/internal/authentication/file_user_provider_failclosed_test.go
+new file mode 100644
+index 0000000..70ec84d
+--- /dev/null
++++ b/internal/authentication/file_user_provider_failclosed_test.go
+@@ -0,0 +1,232 @@
++//go:build linux
++
++package authentication
++
++import (
++	"errors"
++	"sync"
++	"testing"
++	"time"
++
++	"github.com/stretchr/testify/require"
++)
++
++type failClosedDB struct {
++	FileUserProviderDatabase
++	loads         int
++	failRecovery  bool
++	failAfterSave bool
++}
++
++func (d *failClosedDB) Load() error {
++	d.loads++
++	if d.failRecovery && d.loads == 2 {
++		return errors.New("injected recovery failure")
++	}
++	return d.FileUserProviderDatabase.Load()
++}
++func (d *failClosedDB) Save() error {
++	if d.failAfterSave {
++		if err := d.FileUserProviderDatabase.Save(); err != nil {
++			return err
++		}
++	}
++	return errors.New("injected save failure")
++}
++
++type failClosedBlockingDB struct {
++	FileUserProviderDatabase
++	entered chan struct{}
++	proceed chan struct{}
++}
++
++func (d *failClosedBlockingDB) Save() error {
++	close(d.entered)
++	<-d.proceed
++	return d.FileUserProviderDatabase.Save()
++}
++
++func TestFailClosedAfterUncertainSave(t *testing.T) {
++	for _, tc := range []struct {
++		name                       string
++		recoveryFailure, afterSave bool
++	}{
++		{"before-rename-and-reload-failure", true, false},
++		{"save-failure-with-successful-reload", false, false},
++		{"after-save-uncertain-durability", false, true},
++		{"after-save-and-reload-failure", true, true},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			WithDatabase(t, UserDatabaseContent, func(path string) {
++				cfg := DefaultFileAuthenticationBackendConfiguration
++				cfg.Path = path
++				p := NewFileUserProvider(&cfg)
++				require.NoError(t, p.StartupCheck())
++				p.database = &failClosedDB{FileUserProviderDatabase: p.database, failRecovery: tc.recoveryFailure, failAfterSave: tc.afterSave}
++				require.Error(t, p.UpdatePassword("john", "synthetic-new-password"))
++				for _, pw := range []string{"password", "synthetic-new-password"} {
++					ok, err := p.CheckUserPassword("john", pw)
++					require.False(t, ok)
++					require.ErrorIs(t, err, ErrOperationFailed)
++				}
++				_, err := p.GetDetails("john")
++				require.ErrorIs(t, err, ErrOperationFailed)
++				_, err = p.GetDetailsExtended("john")
++				require.ErrorIs(t, err, ErrOperationFailed)
++				require.ErrorIs(t, p.UpdatePassword("john", "other-synthetic-password"), ErrOperationFailed)
++				require.ErrorIs(t, p.ChangePassword("john", "password", "other-synthetic-password"), ErrOperationFailed)
++				_, err = p.Reload()
++				require.Error(t, err)
++				fresh := NewFileUserProvider(&cfg)
++				require.NoError(t, fresh.StartupCheck())
++				pw := "password"
++				if tc.afterSave {
++					pw = "synthetic-new-password"
++				}
++				ok, err := fresh.CheckUserPassword("john", pw)
++				require.NoError(t, err)
++				require.True(t, ok)
++			})
++		})
++	}
++}
++
++func TestAuthReadWaitsForPasswordSave(t *testing.T) {
++	WithDatabase(t, UserDatabaseContent, func(path string) {
++		cfg := DefaultFileAuthenticationBackendConfiguration
++		cfg.Path = path
++		p := NewFileUserProvider(&cfg)
++		require.NoError(t, p.StartupCheck())
++		d := &failClosedBlockingDB{FileUserProviderDatabase: p.database, entered: make(chan struct{}), proceed: make(chan struct{})}
++		p.database = d
++		done := make(chan error, 1)
++		go func() { done <- p.UpdatePassword("john", "synthetic-new-password") }()
++		select {
++		case <-d.entered:
++		case <-time.After(5 * time.Second):
++			t.Fatal("save did not start")
++		}
++		result := make(chan error, 1)
++		go func() {
++			ok, err := p.CheckUserPassword("john", "synthetic-new-password")
++			if err == nil && !ok {
++				err = errors.New("password rejected")
++			}
++			result <- err
++		}()
++		select {
++		case <-result:
++			close(d.proceed)
++			<-done
++			t.Fatal("read returned before save completed")
++		case <-time.After(200 * time.Millisecond):
++		}
++		close(d.proceed)
++		require.NoError(t, <-done)
++		select {
++		case err := <-result:
++			require.NoError(t, err)
++		case <-time.After(3 * time.Second):
++			t.Fatal("read stuck")
++		}
++	})
++}
++
++func TestConcurrentAuthenticationReadsComplete(t *testing.T) {
++	WithDatabase(t, UserDatabaseContent, func(path string) {
++		cfg := DefaultFileAuthenticationBackendConfiguration
++		cfg.Path = path
++		p := NewFileUserProvider(&cfg)
++		require.NoError(t, p.StartupCheck())
++		var wg sync.WaitGroup
++		errs := make(chan error, 8)
++		for range 8 {
++			wg.Add(1)
++			go func() { defer wg.Done(); _, err := p.GetDetails("john"); errs <- err }()
++		}
++		done := make(chan struct{})
++		go func() { wg.Wait(); close(done) }()
++		select {
++		case <-done:
++		case <-time.After(5 * time.Second):
++			t.Fatal("concurrent reads stuck")
++		}
++		close(errs)
++		for err := range errs {
++			require.NoError(t, err)
++		}
++		require.NoError(t, p.ChangePassword("john", "password", "synthetic-new-password"))
++	})
++}
++
++type failClosedBlockingFailureDB struct {
++	*failClosedDB
++	entered chan struct{}
++	proceed chan struct{}
++}
++
++func (d *failClosedBlockingFailureDB) Save() error {
++	close(d.entered)
++	<-d.proceed
++	return d.failClosedDB.Save()
++}
++func TestAuthReadWaitsThenRejectsAfterSaveAndRecoveryFailure(t *testing.T) {
++	WithDatabase(t, UserDatabaseContent, func(path string) {
++		cfg := DefaultFileAuthenticationBackendConfiguration
++		cfg.Path = path
++		p := NewFileUserProvider(&cfg)
++		require.NoError(t, p.StartupCheck())
++		d := &failClosedBlockingFailureDB{failClosedDB: &failClosedDB{FileUserProviderDatabase: p.database, failRecovery: true}, entered: make(chan struct{}), proceed: make(chan struct{})}
++		p.database = d
++		done := make(chan error, 1)
++		go func() { done <- p.UpdatePassword("john", "synthetic-new-password") }()
++		select {
++		case <-d.entered:
++		case <-time.After(5 * time.Second):
++			t.Fatal("save did not start")
++		}
++		result := make(chan error, 1)
++		go func() { _, err := p.CheckUserPassword("john", "synthetic-new-password"); result <- err }()
++		select {
++		case <-result:
++			close(d.proceed)
++			<-done
++			t.Fatal("read returned before failed save")
++		case <-time.After(200 * time.Millisecond):
++		}
++		close(d.proceed)
++		require.Error(t, <-done)
++		select {
++		case err := <-result:
++			require.ErrorIs(t, err, ErrOperationFailed)
++		case <-time.After(3 * time.Second):
++			t.Fatal("read stuck")
++		}
++	})
++}
++
++func TestAuthorizationGuardSerializesStorageFailure(t *testing.T) {
++	WithDatabase(t, UserDatabaseContent, func(path string) {
++		cfg := DefaultFileAuthenticationBackendConfiguration
++		cfg.Path = path
++		p := NewFileUserProvider(&cfg)
++		require.NoError(t, p.StartupCheck())
++		release, err := p.BeginAuthorization()
++		require.NoError(t, err)
++		d := &failClosedDB{FileUserProviderDatabase: p.database, failRecovery: true}
++		p.database = d
++		done := make(chan error, 1)
++		go func() { done <- p.UpdatePassword("john", "synthetic-new-password") }()
++		select {
++		case <-done:
++			release()
++			t.Fatal("writer crossed an active authorization decision")
++		case <-time.After(200 * time.Millisecond):
++		}
++		release()
++		require.Error(t, <-done)
++		release, err = p.BeginAuthorization()
++		require.ErrorIs(t, err, ErrOperationFailed)
++		require.Nil(t, release)
++	})
++}
+diff --git a/internal/authentication/file_user_provider_test.go b/internal/authentication/file_user_provider_test.go
+index 7d5c984..6756222 100644
+--- a/internal/authentication/file_user_provider_test.go
++++ b/internal/authentication/file_user_provider_test.go
+@@ -12,9 +12,12 @@ import (
+ 	"runtime"
+ 	"strings"
+ 	"sync"
++	"syscall"
+ 	"testing"
+ 	"time"
+ 
++	"github.com/go-crypt/crypt"
++	"github.com/go-crypt/crypt/algorithm/argon2"
+ 	"github.com/go-crypt/crypt/algorithm/bcrypt"
+ 	"github.com/go-crypt/crypt/algorithm/pbkdf2"
+ 	"github.com/go-crypt/crypt/algorithm/plaintext"
+@@ -90,8 +93,7 @@ func TestShouldNotPanicOnNilDB(t *testing.T) {
+ 	assert.NoError(t, os.WriteFile(f, UserDatabaseContent, 0600))
+ 
+ 	provider := &FileUserProvider{
+-		config:        &schema.AuthenticationBackendFile{Path: f, Password: schema.DefaultPasswordConfig},
+-		timeoutReload: time.Now().Add(-1 * time.Second),
++		config: &schema.AuthenticationBackendFile{Path: f, Password: schema.DefaultPasswordConfig},
+ 	}
+ 
+ 	assert.NoError(t, provider.StartupCheck())
+@@ -106,9 +108,7 @@ func TestShouldHandleBadConfig(t *testing.T) {
+ 	assert.NoError(t, os.WriteFile(f, UserDatabaseContentExtra, 0600))
+ 
+ 	provider := &FileUserProvider{
+-		config:        &schema.AuthenticationBackendFile{Path: f, Password: schema.DefaultPasswordConfig, ExtraAttributes: map[string]schema.AuthenticationBackendExtraAttribute{"example": {ValueType: "integer"}}},
+-		mutex:         sync.Mutex{},
+-		timeoutReload: time.Now().Add(-1 * time.Second),
++		config: &schema.AuthenticationBackendFile{Path: f, Password: schema.DefaultPasswordConfig, ExtraAttributes: map[string]schema.AuthenticationBackendExtraAttribute{"example": {ValueType: "integer"}}},
+ 	}
+ 
+ 	assert.EqualError(t, provider.StartupCheck(), "error decoding the authentication database: error occurred validating extra attributes for user 'john': attribute 'example' has the known type 'string' but 'integer' is the expected type")
+@@ -124,19 +124,9 @@ func TestShouldReloadDatabase(t *testing.T) {
+ 		expected bool
+ 		err      string
+ 	}{
+-		{
+-			"ShouldSkipReloadRecentlyReloaded",
+-			func(t *testing.T, provider *FileUserProvider) {
+-				provider.timeoutReload = time.Now().Add(time.Minute)
+-			},
+-			false,
+-			"watcher on cooldown",
+-		},
+ 		{
+ 			"ShouldReloadWithoutError",
+-			func(t *testing.T, provider *FileUserProvider) {
+-				provider.timeoutReload = time.Now().Add(time.Minute * -1)
+-			},
++			func(t *testing.T, provider *FileUserProvider) {},
+ 			true,
+ 			"",
+ 		},
+@@ -147,8 +137,6 @@ func TestShouldReloadDatabase(t *testing.T) {
+ 
+ 				_, _ = os.Create(p)
+ 
+-				provider.timeoutReload = time.Now().Add(time.Minute * -1)
+-
+ 				provider.config.Path = p
+ 
+ 				provider.database = NewFileUserDatabase(p, provider.config.Search.Email, provider.config.Search.CaseInsensitive, nil)
+@@ -409,6 +397,27 @@ func TestShouldErrOnUpdatePasswordNoUser(t *testing.T) {
+ 	})
+ }
+ 
++// TestFileDatabaseHashFixtureRoundTrip checks that concurrency test hashes
++// can be decoded after a save and reload, unlike the original plaintext fixture.
++func TestFileDatabaseHashFixtureRoundTrip(t *testing.T) {
++	original, err := plaintext.New()
++	require.NoError(t, err)
++	plainDigest, err := original.Hash("synthetic-password")
++	require.NoError(t, err)
++	_, err = crypt.Decode(plainDigest.Encode())
++	require.Error(t, err)
++
++	fast, err := argon2.New(argon2.WithM(8), argon2.WithT(1), argon2.WithP(1), argon2.WithK(32), argon2.WithS(16))
++	require.NoError(t, err)
++	digest, err := fast.Hash("synthetic-password")
++	require.NoError(t, err)
++	decoded, err := crypt.Decode(digest.Encode())
++	require.NoError(t, err)
++	match, err := decoded.MatchAdvanced("synthetic-password")
++	require.NoError(t, err)
++	require.True(t, match)
++}
++
+ func TestFileUserProviderShouldNotDeadlockOnUpdatePassword(t *testing.T) {
+ 	const (
+ 		concurrency = 8
+@@ -416,7 +425,10 @@ func TestFileUserProviderShouldNotDeadlockOnUpdatePassword(t *testing.T) {
+ 		timeout     = 30 * time.Second
+ 	)
+ 
+-	hash, err := plaintext.New()
++	// The upstream plaintext fixture cannot be reloaded by the file backend.
++	// Use a low-cost Argon2 configuration only for this concurrency test;
++	// production parameters must remain appropriately strong.
++	hash, err := argon2.New(argon2.WithM(8), argon2.WithT(1), argon2.WithP(1), argon2.WithK(32), argon2.WithS(16))
+ 	require.NoError(t, err)
+ 
+ 	update := func(provider *FileUserProvider) {
+@@ -634,10 +646,11 @@ func TestShouldChangePasswordSaveError(t *testing.T) {
+ 		details, _ := db.GetUserDetails("john")
+ 
+ 		gomock.InOrder(
+-			mock.EXPECT().GetUserDetails("john").Return(details, nil),
++			mock.EXPECT().Load().Return(nil),
+ 			mock.EXPECT().GetUserDetails("john").Return(details, nil),
+ 			mock.EXPECT().SetUserDetails("john", gomock.Any()),
+ 			mock.EXPECT().Save().Return(fmt.Errorf("failed to mock save")),
++			mock.EXPECT().Load().Return(nil),
+ 		)
+ 
+ 		err := provider.ChangePassword("john", "password", "newpassword")
+@@ -1043,9 +1056,11 @@ func TestDatabaseError(t *testing.T) {
+ 		provider.database = mock
+ 
+ 		gomock.InOrder(
++			mock.EXPECT().Load().Return(nil),
+ 			mock.EXPECT().GetUserDetails("john").Return(db.GetUserDetails("john")),
+ 			mock.EXPECT().SetUserDetails("john", gomock.Any()),
+ 			mock.EXPECT().Save().Return(fmt.Errorf("failed to mock save")),
++			mock.EXPECT().Load().Return(nil),
+ 		)
+ 
+ 		assert.EqualError(t, provider.UpdatePassword("john", "apple123"), "failed to mock save")
+@@ -1328,6 +1343,198 @@ users:
+       - dev
+ `)
+ 
++// replaceUsersLikeOnboarding swaps the YAML inode, as the external onboarding writer does.
++func replaceUsersLikeOnboarding(t *testing.T, path string) {
++	t.Helper()
++
++	current, err := os.ReadFile(path)
++	require.NoError(t, err)
++	anchor := "      - admins\n      - dev\n"
++	require.Contains(t, string(current), anchor)
++	updated := strings.Replace(string(current), anchor, anchor+"      - onboarded\n", 1)
++
++	temp, err := os.CreateTemp(filepath.Dir(path), ".onboarding-users-*")
++	require.NoError(t, err)
++	defer os.Remove(temp.Name())
++	_, err = temp.WriteString(updated)
++	require.NoError(t, err)
++	require.NoError(t, temp.Sync())
++	require.NoError(t, temp.Close())
++	require.NoError(t, os.Rename(temp.Name(), path))
++}
++
++func TestPasswordWritesPreserveOnboardingEditAndDisabledUser(t *testing.T) {
++	cases := []struct {
++		name  string
++		write func(*FileUserProvider) error
++	}{
++		{"reset", func(p *FileUserProvider) error { return p.UpdatePassword("john", "after-onboarding") }},
++		{"change", func(p *FileUserProvider) error { return p.ChangePassword("john", "password", "after-onboarding") }},
++	}
++
++	for _, tc := range cases {
++		t.Run(tc.name, func(t *testing.T) {
++			WithDatabase(t, UserDatabaseContent, func(path string) {
++				config := DefaultFileAuthenticationBackendConfiguration
++				config.Path = path
++				provider := NewFileUserProvider(&config)
++				require.NoError(t, provider.StartupCheck())
++
++				replaceUsersLikeOnboarding(t, path)
++				before, err := os.Stat(path)
++				require.NoError(t, err)
++				require.NoError(t, tc.write(provider))
++
++				after, err := os.Stat(path)
++				require.NoError(t, err)
++				require.False(t, os.SameFile(before, after), "native Save must replace the YAML inode")
++				require.Equal(t, os.FileMode(0600), after.Mode().Perm())
++				leftovers, err := filepath.Glob(filepath.Join(filepath.Dir(path), "."+filepath.Base(path)+".authelia-*"))
++				require.NoError(t, err)
++				require.Empty(t, leftovers)
++
++				model := &FileDatabaseModel{}
++				require.NoError(t, model.Read(path))
++				require.Contains(t, model.Users["john"].Groups, "onboarded")
++				require.True(t, model.Users["dis"].Disabled)
++
++				fresh := NewFileUserProvider(&config)
++				require.NoError(t, fresh.StartupCheck())
++				valid, err := fresh.CheckUserPassword("john", "after-onboarding")
++				require.NoError(t, err)
++				require.True(t, valid)
++				_, err = fresh.GetDetails("dis")
++				require.ErrorIs(t, err, ErrUserNotFound)
++			})
++		})
++	}
++}
++
++func TestPasswordUpdateCoordinatesWithOnboardingLock(t *testing.T) {
++	WithDatabase(t, UserDatabaseContent, func(path string) {
++		config := DefaultFileAuthenticationBackendConfiguration
++		config.Path = path
++		provider := NewFileUserProvider(&config)
++		require.NoError(t, provider.StartupCheck())
++
++		lock, err := os.OpenFile(path+".lock", os.O_RDWR|os.O_CREATE, 0600)
++		require.NoError(t, err)
++		defer lock.Close()
++		require.NoError(t, syscall.Flock(int(lock.Fd()), syscall.LOCK_EX))
++
++		done := make(chan error, 1)
++		started := make(chan struct{})
++		go func() {
++			close(started)
++			done <- provider.UpdatePassword("john", "after-onboarding")
++		}()
++		select {
++		case <-started:
++		case <-time.After(5 * time.Second):
++			t.Fatal("native password update goroutine did not start")
++		}
++		deadline := time.Now().Add(5 * time.Second)
++		for provider.mutex.TryLock() {
++			provider.mutex.Unlock()
++			if !time.Now().Before(deadline) {
++				t.Fatal("native password update did not acquire the provider mutex")
++			}
++			time.Sleep(5 * time.Millisecond)
++		}
++		select {
++		case err := <-done:
++			t.Fatalf("native write completed while onboarding held the lock: %v", err)
++		default:
++		}
++		replaceUsersLikeOnboarding(t, path)
++		require.NoError(t, syscall.Flock(int(lock.Fd()), syscall.LOCK_UN))
++
++		select {
++		case err := <-done:
++			require.NoError(t, err)
++		case <-time.After(30 * time.Second):
++			t.Fatal("native password update did not finish after releasing the lock")
++		}
++
++		model := &FileDatabaseModel{}
++		require.NoError(t, model.Read(path))
++		require.Contains(t, model.Users["john"].Groups, "onboarded")
++		require.True(t, model.Users["dis"].Disabled)
++		fresh := NewFileUserProvider(&config)
++		require.NoError(t, fresh.StartupCheck())
++		valid, err := fresh.CheckUserPassword("john", "after-onboarding")
++		require.NoError(t, err)
++		require.True(t, valid)
++	})
++}
++
++func TestPasswordSaveFailureReloadsDiskState(t *testing.T) {
++	WithDatabase(t, UserDatabaseContent, func(path string) {
++		config := DefaultFileAuthenticationBackendConfiguration
++		config.Path = path
++		provider := NewFileUserProvider(&config)
++		require.NoError(t, provider.StartupCheck())
++
++		before, err := os.ReadFile(path)
++		require.NoError(t, err)
++		beforeInfo, err := os.Stat(path)
++		require.NoError(t, err)
++		require.NoError(t, os.Chmod(path, 0644))
++
++		err = provider.UpdatePassword("john", "rejected-password")
++		require.Error(t, err)
++		require.Contains(t, err.Error(), "unsafe authentication database metadata")
++		after, readErr := os.ReadFile(path)
++		require.NoError(t, readErr)
++		require.Equal(t, before, after)
++		afterInfo, statErr := os.Stat(path)
++		require.NoError(t, statErr)
++		require.True(t, os.SameFile(beforeInfo, afterInfo))
++
++		valid, checkErr := provider.CheckUserPassword("john", "password")
++		require.ErrorIs(t, checkErr, ErrOperationFailed)
++		require.False(t, valid)
++		valid, checkErr = provider.CheckUserPassword("john", "rejected-password")
++		require.ErrorIs(t, checkErr, ErrOperationFailed)
++		require.False(t, valid)
++	})
++}
++
++func TestReloadAfterNativeSaveAndRapidOnboardingChanges(t *testing.T) {
++	WithDatabase(t, UserDatabaseContent, func(path string) {
++		config := DefaultFileAuthenticationBackendConfiguration
++		config.Path = path
++		provider := NewFileUserProvider(&config)
++		require.NoError(t, provider.StartupCheck())
++		require.NoError(t, provider.UpdatePassword("john", "new-password"))
++
++		model := &FileDatabaseModel{}
++		require.NoError(t, model.Read(path))
++		john := model.Users["john"]
++		john.Groups = append(john.Groups, "onboarded")
++		model.Users["john"] = john
++		require.NoError(t, model.Write(path))
++		reloaded, err := provider.Reload()
++		require.NoError(t, err)
++		require.True(t, reloaded)
++		details, err := provider.GetDetails("john")
++		require.NoError(t, err)
++		require.Contains(t, details.Groups, "onboarded")
++
++		model = &FileDatabaseModel{}
++		require.NoError(t, model.Read(path))
++		john = model.Users["john"]
++		john.Disabled = true
++		model.Users["john"] = john
++		require.NoError(t, model.Write(path))
++		reloaded, err = provider.Reload()
++		require.NoError(t, err)
++		require.True(t, reloaded)
++		_, err = provider.GetDetails("john")
++		require.ErrorIs(t, err, ErrUserNotFound)
++	})
++}
++
+ func WithDatabase(t *testing.T, content []byte, f func(path string)) {
+ 	t.Helper()
+ 
+diff --git a/internal/handlers/handler_authz.go b/internal/handlers/handler_authz.go
+index 796de94..c3b5e71 100644
+--- a/internal/handlers/handler_authz.go
++++ b/internal/handlers/handler_authz.go
+@@ -155,6 +155,23 @@ type AuthzContext interface {
+ 
+ // Handler is the middlewares.RequestHandler for Authz.
+ func (authz *Authz) Handler(ctx AuthzContext) {
++	// Hold a file-provider guard over the entire decision. Otherwise a save
++	// failure could invalidate the provider after an early health check while
++	// a cached session is still being authorized.
++	if ctx.GetConfiguration().AuthenticationBackend.File != nil {
++		guard, ok := ctx.GetUserProvider().(interface{ BeginAuthorization() (func(), error) })
++		if !ok {
++			ctx.ReplyStatusCode(503)
++			return
++		}
++		release, err := guard.BeginAuthorization()
++		if err != nil {
++			ctx.ReplyStatusCode(503)
++			return
++		}
++		defer release()
++	}
++
+ 	var (
+ 		object      authorization.Object
+ 		autheliaURL *url.URL
+diff --git a/internal/handlers/handler_authz_failclosed_test.go b/internal/handlers/handler_authz_failclosed_test.go
+new file mode 100644
+index 0000000..5f89066
+--- /dev/null
++++ b/internal/handlers/handler_authz_failclosed_test.go
+@@ -0,0 +1,98 @@
++//go:build linux
++
++package handlers
++
++import (
++	"fmt"
++	"net/url"
++	"os"
++	"path/filepath"
++	"testing"
++	"time"
++
++	"github.com/authelia/authelia/v4/internal/authentication"
++	"github.com/authelia/authelia/v4/internal/configuration/schema"
++	"github.com/authelia/authelia/v4/internal/mocks"
++	"github.com/authelia/authelia/v4/internal/session"
++	"github.com/go-crypt/crypt/algorithm/argon2"
++	"github.com/stretchr/testify/require"
++	"github.com/valyala/fasthttp"
++)
++
++func TestAuthzExistingCookieDeniedAfterProviderFailure(t *testing.T) {
++	t.Run("never", func(t *testing.T) { checkAuthzExistingCookie(t, schema.NewRefreshIntervalDurationNever()) })
++	t.Run("ttl", func(t *testing.T) { checkAuthzExistingCookie(t, schema.NewRefreshIntervalDuration(5*time.Minute)) })
++}
++func checkAuthzExistingCookie(t *testing.T, refresh schema.RefreshIntervalDuration) {
++	hasher, err := argon2.New(argon2.WithM(8), argon2.WithT(1), argon2.WithP(1), argon2.WithK(32), argon2.WithS(16))
++	require.NoError(t, err)
++	digest, err := hasher.Hash("synthetic-password")
++	require.NoError(t, err)
++	path := filepath.Join(t.TempDir(), "users.yml")
++	data := fmt.Sprintf("users:\n  john:\n    displayname: John\n    email: john@example.invalid\n    password: '%s'\n    groups: []\n", digest.Encode())
++	require.NoError(t, os.WriteFile(path, []byte(data), 0600))
++	cfg := schema.AuthenticationBackendFile{Path: path, Password: schema.DefaultPasswordConfig}
++	provider := authentication.NewFileUserProvider(&cfg)
++	require.NoError(t, provider.StartupCheck())
++	mock := mocks.NewMockAutheliaCtx(t)
++	defer mock.Close()
++	setUpMockClock(mock)
++	mock.Ctx.Providers.UserProvider = provider
++	mock.Ctx.Configuration.AuthenticationBackend.File = &cfg
++	mock.Ctx.Configuration.Session.Cookies[0].Inactivity = testInactivity
++	mock.Ctx.Providers.SessionProvider = session.NewProvider(mock.Ctx.Configuration.Session, nil)
++	target, err := url.ParseRequestURI("https://one-factor.example.com")
++	require.NoError(t, err)
++	setRequestForwardAuth(mock.Ctx, fasthttp.MethodGet, target, true, false)
++	us, err := mock.Ctx.GetSession()
++	require.NoError(t, err)
++	us.Username = "john"
++	us.AuthenticationMethodRefs.UsernameAndPassword = true
++	us.LastActivity = mock.Clock.Now().Unix()
++	us.RefreshTTL = mock.Clock.Now().Add(5 * time.Minute)
++	require.NoError(t, mock.Ctx.SaveSession(us))
++	authz := NewAuthzBuilder().WithImplementationForwardAuth().WithStrategies(NewCookieSessionAuthnStrategy(refresh)).Build()
++	authz.Handler(mock.Ctx)
++	require.Equal(t, fasthttp.StatusOK, mock.Ctx.Response.StatusCode())
++	require.NoError(t, os.Chmod(path, 0644))
++	require.Error(t, provider.UpdatePassword("john", "synthetic-new-password"))
++	mock.Ctx.Response.Reset()
++	authz.Handler(mock.Ctx)
++	require.Equal(t, fasthttp.StatusServiceUnavailable, mock.Ctx.Response.StatusCode())
++}
++
++// A wrapper which omits the required guard must not silently allow requests.
++type labUnguardedProvider struct{ authentication.UserProvider }
++
++func TestAuthzFileProviderWrapperMissingGuardDenied(t *testing.T) {
++	mock := mocks.NewMockAutheliaCtx(t)
++	defer mock.Close()
++	mock.Ctx.Configuration.AuthenticationBackend.File = &schema.AuthenticationBackendFile{}
++	mock.Ctx.Providers.UserProvider = labUnguardedProvider{UserProvider: mock.UserProviderMock}
++	authz := NewAuthzBuilder().WithImplementationForwardAuth().Build()
++	authz.Handler(mock.Ctx)
++	require.Equal(t, fasthttp.StatusServiceUnavailable, mock.Ctx.Response.StatusCode())
++}
++
++func TestAuthzLDAPProviderWithoutFileGuardAllowsExistingSession(t *testing.T) {
++	mock := mocks.NewMockAutheliaCtx(t)
++	defer mock.Close()
++	setUpMockClock(mock)
++	mock.Ctx.Configuration.AuthenticationBackend.File = nil
++	mock.Ctx.Configuration.AuthenticationBackend.LDAP = &schema.AuthenticationBackendLDAP{}
++	mock.Ctx.Providers.UserProvider = labUnguardedProvider{UserProvider: mock.UserProviderMock}
++	mock.Ctx.Configuration.Session.Cookies[0].Inactivity = testInactivity
++	mock.Ctx.Providers.SessionProvider = session.NewProvider(mock.Ctx.Configuration.Session, nil)
++	target, err := url.ParseRequestURI("https://one-factor.example.com")
++	require.NoError(t, err)
++	setRequestForwardAuth(mock.Ctx, fasthttp.MethodGet, target, true, false)
++	us, err := mock.Ctx.GetSession()
++	require.NoError(t, err)
++	us.Username = "john"
++	us.AuthenticationMethodRefs.UsernameAndPassword = true
++	us.LastActivity = mock.Clock.Now().Unix()
++	require.NoError(t, mock.Ctx.SaveSession(us))
++	authz := NewAuthzBuilder().WithImplementationForwardAuth().WithStrategies(NewCookieSessionAuthnStrategy(schema.NewRefreshIntervalDurationNever())).Build()
++	authz.Handler(mock.Ctx)
++	require.Equal(t, fasthttp.StatusOK, mock.Ctx.Response.StatusCode())
++}
