@@ -1,0 +1,80 @@
+# syntax=docker/dockerfile:1@sha256:7b32114e84ca21aeb2d6f871a0b62b3a0762193f75d9afd048ee4cbe889f3148
+# EXPERIMENTAL: the OCI build and image have not yet been run or accepted.
+# Pin the linux/amd64 child manifests, not mutable tags or architecture indexes.
+ARG SOURCE_DATE_EPOCH=1789645543
+FROM --platform=linux/amd64 golang@sha256:e114385c58e7280d2f56d6cf374219dda33fef8eb77f72e9f290ccae6160bd90 AS build
+
+ENV GOTOOLCHAIN=local GOFLAGS=-mod=readonly GOMAXPROCS=2
+WORKDIR /src
+
+# Verify the fetched tag resolves to the exact source commit.  The release
+# frontend is separately authenticated by SHA-256 before it is extracted.
+RUN git clone --quiet --depth 1 --branch v4.39.28 https://github.com/authelia/authelia.git . \
+    && test "$(git rev-parse HEAD)" = 8da42b2348b0351c6284a2940a9c5eec3d4cd3fd \
+    && curl --fail --silent --show-error --location \
+       https://github.com/authelia/authelia/releases/download/v4.39.28/authelia-v4.39.28-public_html.tar.gz \
+       -o /tmp/frontend.tar.gz \
+    && echo '2009c5f499f92179c0b4c8a3185a8bc4f3e1666d169818d382242103c09a380f  /tmp/frontend.tar.gz' | sha256sum -c -
+
+COPY port.patch /tmp/port-input.patch
+COPY watch.go /tmp/watch-input.go
+
+# Normalize Windows checkout line endings, then verify canonical bytes.  Any
+# other change is rejected before patch application or test execution.
+RUN sed 's/\r$//' /tmp/port-input.patch > /tmp/port.patch \
+    && sed 's/\r$//' /tmp/watch-input.go > /tmp/watch.go \
+    && echo '3afe312272884ac5155fdafcb8c2ae56d895c4f4f26a0fee7dbbaeca19c78b73  /tmp/port.patch' | sha256sum -c - \
+    && echo '2e9dfdaac582bf2daead81aa687f38f41b7aa73aa0337b24137c1c553a728be2  /tmp/watch.go' | sha256sum -c - \
+    && git apply --check /tmp/port.patch \
+    && git apply /tmp/port.patch \
+    && cp /tmp/watch.go internal/service/file_watcher_port_test.go \
+    && mv internal/server/public_html /tmp/upstream-placeholder-html \
+    && tar --no-same-owner -xzf /tmp/frontend.tar.gz -C internal/server \
+    && test -f internal/server/public_html/index.html
+
+# go.mod/go.sum pin module versions and checksums.  Tests and compile have no
+# external network access; loopback is needed by upstream's LDAP tests.
+RUN go mod download
+# Permission-sensitive upstream tests must not run as root. Keep source and
+# Go module cache separate from the temporary test user's writable build cache.
+RUN useradd --uid 65532 --user-group --no-create-home --home-dir /tmp/authelia-test-home --shell /usr/sbin/nologin authelia-test \
+    && mkdir -p /tmp/authelia-test-home \
+    && chown -R 65532:65532 /src /tmp/authelia-test-home
+ENV HOME=/tmp/authelia-test-home GOCACHE=/tmp/authelia-test-home/.cache/go-build
+USER 65532:65532
+RUN --network=none CGO_ENABLED=1 GOPROXY=off GOSUMDB=off \
+    go test -p 2 -count=1 ./internal/authentication ./internal/handlers \
+    && CGO_ENABLED=1 GOPROXY=off GOSUMDB=off \
+       go test -p 2 -count=1 ./internal/service -run '^TestPortWatcherAtomicReplaceThenImmediateDisable$'
+
+USER root
+RUN --network=none CGO_ENABLED=1 GOPROXY=off GOSUMDB=off \
+    go build -p 2 -trimpath -buildvcs=false \
+    -ldflags '-X github.com/authelia/authelia/v4/internal/utils.BuildTag=v4.39.28 -X github.com/authelia/authelia/v4/internal/utils.BuildState=tagged -X github.com/authelia/authelia/v4/internal/utils.BuildCommit=8da42b2348b0351c6284a2940a9c5eec3d4cd3fd -X github.com/authelia/authelia/v4/internal/utils.BuildBranch=patch-lab' \
+    -o /out/authelia ./cmd/authelia \
+    && mkdir -p /out/frontend-licenses \
+    && cd internal/server/public_html \
+    && find . -type f \( -iname '*license*' -o -iname 'notice*' \) -exec cp --parents {} /out/frontend-licenses/ \;
+
+# The binary is dynamically linked against glibc.  Use a pinned Debian 13
+# runtime rather than assuming ABI compatibility with the upstream image.
+FROM --platform=linux/amd64 debian@sha256:7378260c0a098d27ac206225db5e7d92b8c7c84ea7afccc86eeb513756bbd392 AS runtime
+# Labels describe intended inputs; they are assertions, not attestations.
+LABEL org.opencontainers.image.source="https://github.com/WaldemarFech/authelia-onboarding" \
+      org.opencontainers.image.revision="8da42b2348b0351c6284a2940a9c5eec3d4cd3fd" \
+      io.github.waldemarfech.authelia.patch.sha256="3afe312272884ac5155fdafcb8c2ae56d895c4f4f26a0fee7dbbaeca19c78b73" \
+      io.github.waldemarfech.authelia.frontend.sha256="2009c5f499f92179c0b4c8a3185a8bc4f3e1666d169818d382242103c09a380f" \
+      org.opencontainers.image.description="Experimental Authelia 4.39.28 guarded file-lock candidate; not production approved"
+COPY --from=build /out/authelia /usr/local/bin/authelia
+COPY --from=build /src/LICENSE /usr/share/doc/authelia/LICENSE
+COPY --from=build /src/LICENSES/ /usr/share/doc/authelia/LICENSES/
+COPY --from=build /out/frontend-licenses/ /usr/share/doc/authelia/frontend-licenses/
+COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+WORKDIR /config
+EXPOSE 9091
+# Deliberately retains root to match the current onboarding writer's UID; this
+# is a documented experimental constraint, not a security recommendation.
+USER 0:0
+ENTRYPOINT ["/usr/local/bin/authelia"]
+CMD ["--config", "/config/configuration.yml"]
