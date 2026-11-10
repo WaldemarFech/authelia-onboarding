@@ -78,6 +78,10 @@ EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
 ARGON_RE = re.compile(rb"\$argon2id\$v=19\$m=\d+,t=\d+,p=\d+\$[A-Za-z0-9+/]+\$[A-Za-z0-9+/]+")
 
 
+class StaleGroupsError(ValueError):
+    """Managed groups changed after the administrator opened the dialog."""
+
+
 class DuplicateKeyLoader(yaml.SafeLoader):
     pass
 
@@ -473,13 +477,17 @@ class Store:
             db.commit()
             return bool(cur.rowcount)
 
-    def update_user(self, username: str, *, disabled: bool | None = None, groups: list[str] | None = None, actor: str = "system") -> None:
+    def update_user(self, username: str, *, disabled: bool | None = None, groups: list[str] | None = None,
+                    expected_groups: list[str] | None = None, actor: str = "system") -> None:
         if username.casefold() in {admin.casefold() for admin in ADMINS}:
             raise ValueError("the administrator account is protected")
         if disabled is None and groups is None:
             raise ValueError("no account change requested")
-        if groups is not None and any(group not in ALLOWED_GROUPS for group in groups):
-            raise ValueError("unsupported group")
+        if groups is not None:
+            if not groups_allowed(groups) or not groups_allowed(expected_groups):
+                raise ValueError("groups and expected groups must be explicitly allowed lists")
+        elif expected_groups is not None:
+            raise ValueError("unexpected group precondition")
         with self.lock:
             self.recover_pending_user_updates()
             # Hold the same cross-process lock as the password helper from the
@@ -498,6 +506,9 @@ class Store:
                     after["disabled"] = bool(disabled)
                 if groups is not None:
                     existing = sorted(set(record.get("groups") or []))
+                    managed_existing = set(existing) & ALLOWED_GROUPS
+                    if managed_existing != set(expected_groups):
+                        raise StaleGroupsError("groups changed; refresh before retrying")
                     before["groups"] = existing
                     # Admin UI manages only its allowlisted rights. Keep any
                     # other groups owned by existing integrations.
@@ -875,12 +886,16 @@ class Handler(BaseHTTPRequestHandler):
             match = re.fullmatch(re.escape(PREFIX) + r"/admin/api/users/([^/]+)/groups", path)
             if match:
                 groups = data.get("groups")
-                if not isinstance(groups, list) or any(not isinstance(g, str) for g in groups):
-                    raise ValueError("groups must be a list")
-                self.store.update_user(urllib.parse.unquote(match.group(1)), groups=groups, actor=self.headers["Remote-User"])
+                expected = data.get("expected_groups")
+                if not groups_allowed(groups) or not groups_allowed(expected):
+                    raise ValueError("groups and expected groups must be explicitly allowed lists")
+                self.store.update_user(urllib.parse.unquote(match.group(1)), groups=groups,
+                                       expected_groups=expected, actor=self.headers["Remote-User"])
                 self._json(200, {"ok": True})
                 return
             self._json(404, {"error": "not found"})
+        except StaleGroupsError as exc:
+            self._json(409, {"error": str(exc)})
         except PermissionError as exc:
             self._json(403, {"error": str(exc)})
         except KeyError as exc:
@@ -908,13 +923,14 @@ def configure_from_environment() -> tuple[str, int]:
     if len({name.casefold() for name in admins}) != len(admins):
         raise RuntimeError("duplicate administrator names")
     try:
-        ipaddress.ip_address(values["ONBOARDING_TRUSTED_PROXY"])
+        proxy_ip = ipaddress.ip_address(values["ONBOARDING_TRUSTED_PROXY"])
         bind_ip = ipaddress.ip_address(values["ONBOARDING_BIND_IP"])
         port = int(values["ONBOARDING_BIND_PORT"])
     except ValueError as exc:
         raise RuntimeError("invalid proxy or bind address") from exc
-    if bind_ip.is_unspecified or not (1 <= port <= 65535):
-        raise RuntimeError("wildcard binds and invalid ports are forbidden")
+    if (proxy_ip.is_unspecified or proxy_ip.is_multicast or bind_ip.is_unspecified
+            or bind_ip.is_multicast or not (1 <= port <= 65535)):
+        raise RuntimeError("unspecified or multicast addresses and invalid ports are forbidden")
     origin = urllib.parse.urlsplit(values["ONBOARDING_ORIGIN"])
     if (origin.scheme != "https" or not origin.hostname or origin.username or origin.password
             or origin.path or origin.query or origin.fragment):

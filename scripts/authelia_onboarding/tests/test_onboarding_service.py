@@ -325,7 +325,7 @@ class OnboardingStoreTests(unittest.TestCase):
                           "correct horse battery staple")
         with patch.object(self.store, "_finish_user_update", side_effect=RuntimeError("audit offline")):
             with self.assertRaisesRegex(RuntimeError, "audit offline"):
-                self.store.update_user("rights-user", groups=["jellyfin-users"])
+                self.store.update_user("rights-user", groups=["jellyfin-users"], expected_groups=[])
         self.assertEqual(self.store.users.load()["users"]["rights-user"]["groups"], ["jellyfin-users"])
         with self.store._connect() as db:
             self.assertEqual(db.execute("SELECT COUNT(*) FROM pending_user_updates").fetchone()[0], 1)
@@ -349,7 +349,7 @@ class OnboardingStoreTests(unittest.TestCase):
                           "correct horse battery staple")
         with patch.object(self.store.users, "_write_locked", side_effect=OSError("disk unavailable")):
             with self.assertRaisesRegex(RuntimeError, "did not complete"):
-                self.store.update_user("rights-user", groups=["jellyfin-users"])
+                self.store.update_user("rights-user", groups=["jellyfin-users"], expected_groups=[])
         self.assertEqual(self.store.users.load()["users"]["rights-user"]["groups"], [])
         with self.store._connect() as db:
             self.assertEqual(db.execute("SELECT COUNT(*) FROM pending_user_updates").fetchone()[0], 0)
@@ -363,7 +363,7 @@ class OnboardingStoreTests(unittest.TestCase):
                           "correct horse battery staple")
         with patch.object(self.store.users, "fsync_directory", side_effect=OSError("sync unavailable")):
             with self.assertRaisesRegex(OSError, "sync unavailable"):
-                self.store.update_user("rights-user", groups=["jellyfin-users"])
+                self.store.update_user("rights-user", groups=["jellyfin-users"], expected_groups=[])
         with self.store._connect() as db:
             self.assertEqual(db.execute("SELECT COUNT(*) FROM pending_user_updates").fetchone()[0], 1)
             self.assertEqual(db.execute(
@@ -395,12 +395,27 @@ class OnboardingStoreTests(unittest.TestCase):
         self.store.redeem(token, "rights-user", "Rights User", "rights@example.invalid",
                           "correct horse battery staple")
         self.store.users.update("rights-user", disabled=None, groups=["other-integration"])
-        self.store.update_user("rights-user", groups=["jellyfin-users"])
+        self.store.update_user("rights-user", groups=["jellyfin-users"], expected_groups=[])
         self.assertEqual(self.store.users.load()["users"]["rights-user"]["groups"],
                          ["jellyfin-users", "other-integration"])
-        self.store.update_user("rights-user", groups=[])
+        self.store.update_user("rights-user", groups=[], expected_groups=["jellyfin-users"])
         self.assertEqual(self.store.users.load()["users"]["rights-user"]["groups"],
                          ["other-integration"])
+
+    def test_stale_group_edit_is_rejected_without_mutation(self) -> None:
+        with patch.object(onboarding, "ALLOWED_GROUPS", {"jellyfin-users", "students"}):
+            self.store.update_user("LabUser", groups=["students"], expected_groups=["jellyfin-users"])
+            before = self.users_path.read_bytes()
+            with self.assertRaisesRegex(ValueError, "changed"):
+                self.store.update_user("LabUser", groups=[], expected_groups=["jellyfin-users"])
+            self.assertEqual(self.users_path.read_bytes(), before)
+            self.assertEqual(self.store.users.load()["users"]["LabUser"]["groups"], ["students"])
+
+    def test_group_edit_requires_precondition(self) -> None:
+        before = self.users_path.read_bytes()
+        with self.assertRaises(ValueError):
+            self.store.update_user("LabUser", groups=[])
+        self.assertEqual(self.users_path.read_bytes(), before)
 
     def test_invite_input_types_and_group_allowlist_are_strict(self) -> None:
         for args in ((True, 1, []), (7, False, []), (7, 1, "jellyfin-users"), (7, 1, [1])):
@@ -423,10 +438,10 @@ class OnboardingStoreTests(unittest.TestCase):
                     self.store.update_user(username, disabled=True)
                 with self.assertRaisesRegex(ValueError, "administrator account is protected"):
                     self.store.update_user(username, groups=[])
-        self.store.update_user("LabUser", disabled=True, groups=[])
+        self.store.update_user("LabUser", disabled=True, groups=[], expected_groups=["jellyfin-users"])
         self.assertTrue(self.store.users.load()["users"]["LabUser"]["disabled"])
         self.assertEqual(self.store.users.load()["users"]["LabUser"]["groups"], [])
-        self.store.update_user("LabUser", disabled=False, groups=["jellyfin-users"])
+        self.store.update_user("LabUser", disabled=False, groups=["jellyfin-users"], expected_groups=[])
         self.assertFalse(self.store.users.load()["users"]["LabUser"]["disabled"])
         self.assertEqual(self.store.audit_tail()[0]["actor"], "system")
 
@@ -508,7 +523,12 @@ class OnboardingStoreTests(unittest.TestCase):
         self.assertEqual(code, 201)
         self.assertEqual(request("POST", f"/onboarding/admin/api/invites/{invite['id']}/revoke")[0], 200)
         self.assertEqual(request("POST", "/onboarding/admin/api/users/LabUser/groups",
-                                 {"groups": [], "actor": "labowner"})[0], 200)
+                                 {"groups": [], "expected_groups": ["jellyfin-users"], "actor": "labowner"})[0], 200)
+        current = self.users_path.read_bytes()
+        self.assertEqual(request("POST", "/onboarding/admin/api/users/LabUser/groups",
+                                 {"groups": [], "expected_groups": ["jellyfin-users"]})[0], 409)
+        self.assertEqual(self.users_path.read_bytes(), current)
+        self.assertEqual(request("POST", "/onboarding/admin/api/users/LabUser/groups", {"groups": []})[0], 400)
         self.assertEqual(request("POST", "/onboarding/admin/api/users/LabUser/disabled", {"disabled": True})[0], 200)
         self.assertEqual({event["actor"] for event in self.store.audit_tail()}, {"jarvis"})
         self.assertEqual({event["action"] for event in self.store.audit_tail()},
@@ -519,7 +539,7 @@ class OnboardingStoreTests(unittest.TestCase):
                 self.assertEqual(request("POST", f"/onboarding/admin/api/users/{username}/disabled",
                                          {"disabled": True})[0], 400)
                 self.assertEqual(request("POST", f"/onboarding/admin/api/users/{username}/groups",
-                                         {"groups": []})[0], 400)
+                                         {"groups": [], "expected_groups": []})[0], 400)
         self.assertEqual(self.users_path.read_bytes(), before)
 
     def test_rate_limiter_expires_at_window_boundary_and_isolates_buckets(self) -> None:
